@@ -7,10 +7,13 @@ REST/JSON gateway. The whole stack runs locally on Docker Compose and deploys to
 Kubernetes via a Helm chart, with Prometheus/Grafana metrics and OpenTelemetry
 tracing.
 
-> Status: **M0 — scaffold & contracts.** Protobuf contracts, the shared config
-> and telemetry packages, the synthetic event source, and the CI pipeline are in
-> place. Kafka wiring, the live Ethereum source, the windowing engine, the gRPC
-> server, and the Helm deploy land in M1–M6 (see [Roadmap](#roadmap)).
+> Status: **M1 — ingester → Kafka.** The ingester now decodes source events into
+> protobuf `ChainEvent`s and produces them to `raw-events` via an idempotent,
+> acks=all franz-go producer, exposes Prometheus metrics and `/healthz` on
+> `METRICS_ADDR`, and flushes in-flight records on shutdown. A testcontainers
+> integration test produces to and consumes from a real Redpanda container. The
+> live Ethereum source, the windowing engine, the gRPC server, and the Helm
+> deploy land in M2–M6 (see [Roadmap](#roadmap)).
 
 ## Architecture
 
@@ -62,16 +65,23 @@ golangci-lint · GitHub Actions
 ## Quickstart
 
 ```bash
-make tools      # install pinned protoc-gen-go / protoc-gen-go-grpc
-make proto      # lint protobuf + regenerate ./gen
-make build      # build all four service binaries into ./bin
-make test       # go test -race ./...
-make lint       # golangci-lint
+make tools       # install pinned protoc-gen-go / protoc-gen-go-grpc
+make proto       # lint protobuf + regenerate ./gen
+make build       # build all four service binaries into ./bin
+make test        # go test -race ./...  (integration tests need Docker)
+make test-unit   # go test -race -short ./...  (fast, no Docker)
+make lint        # golangci-lint
 
-make up         # start Redpanda, TimescaleDB, Prometheus, Grafana, Jaeger
-make run-ingester   # M0: streams synthetic events and logs throughput
+make up          # start Redpanda, TimescaleDB, Prometheus, Grafana, Jaeger
+make run-ingester   # decode synthetic events -> produce to raw-events
 make down
 ```
+
+The ingester serves Prometheus metrics and a liveness probe on `METRICS_ADDR`
+(`:2112` by default): `GET /metrics`, `GET /healthz`. Key series:
+`streamforge_events_ingested_total{chain,type}`,
+`streamforge_events_produced_total{topic}`,
+`streamforge_produce_errors_total{topic}`, `streamforge_source_up`.
 
 Local endpoints once `make up` is running:
 
@@ -96,7 +106,8 @@ fails fast on malformed or out-of-range values.
 cmd/<service>/      service entrypoints
 internal/config/    env-driven configuration + validation
 internal/source/    event source interface + synthetic generator
-internal/telemetry/ structured logging (metrics + tracing added later)
+internal/kafka/     franz-go producer wrapper (protobuf values, acks=all)
+internal/telemetry/ structured logging + Prometheus metrics / health server
 proto/              protobuf contracts (buf)
 gen/                generated Go (committed; CI checks it is current)
 deploy/compose/     local infra stack
@@ -109,7 +120,7 @@ deploy/grafana/     datasource + dashboard provisioning
 | Milestone | Scope |
 |-----------|-------|
 | **M0** | Scaffold, protobuf contracts, config/telemetry, synthetic source, CI |
-| M1 | Ingester → Kafka producer, Prometheus metrics, health endpoint, integration tests (testcontainers) |
+| **M1** | Ingester → Kafka producer, Prometheus metrics, health endpoint, integration tests (testcontainers) |
 | M2 | Live Ethereum WebSocket source: reconnect/backoff, dedup |
 | M3 | Normalizer + aggregator: consumer groups, tumbling windows, TimescaleDB, checkpointing |
 | M4 | gRPC API (server-streaming) + grpc-gateway REST + demo dashboard + API-key auth |

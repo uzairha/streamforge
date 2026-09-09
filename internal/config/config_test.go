@@ -28,6 +28,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.WindowSize != time.Minute {
 		t.Errorf("WindowSize = %v, want 1m", cfg.WindowSize)
 	}
+	if cfg.ShutdownTimeout != 10*time.Second {
+		t.Errorf("ShutdownTimeout = %v, want 10s", cfg.ShutdownTimeout)
+	}
 	if len(cfg.KafkaBrokers) != 1 || cfg.KafkaBrokers[0] != "localhost:19092" {
 		t.Errorf("KafkaBrokers = %v, want [localhost:19092]", cfg.KafkaBrokers)
 	}
@@ -59,12 +62,14 @@ func TestLoad_Overrides(t *testing.T) {
 
 func TestLoad_InvalidValues(t *testing.T) {
 	cases := map[string]map[string]string{
-		"negative rate":    {"SYNTHETIC_RATE": "-5"},
-		"zero rate":        {"SYNTHETIC_RATE": "0"},
-		"unparseable rate": {"SYNTHETIC_RATE": "fast"},
-		"unknown source":   {"SOURCE": "dogecoin"},
-		"bad duration":     {"WINDOW_SIZE": "10 fortnights"},
-		"bad bool":         {"TRACING_ENABLED": "maybe"},
+		"negative rate":      {"SYNTHETIC_RATE": "-5"},
+		"zero rate":          {"SYNTHETIC_RATE": "0"},
+		"unparseable rate":   {"SYNTHETIC_RATE": "fast"},
+		"unknown source":     {"SOURCE": "dogecoin"},
+		"bad duration":       {"WINDOW_SIZE": "10 fortnights"},
+		"bad bool":           {"TRACING_ENABLED": "maybe"},
+		"negative shutdown":  {"SHUTDOWN_TIMEOUT": "-1s"},
+		"bad shutdown value": {"SHUTDOWN_TIMEOUT": "soon"},
 	}
 	for name, envs := range cases {
 		t.Run(name, func(t *testing.T) {

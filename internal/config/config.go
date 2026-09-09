@@ -32,6 +32,9 @@ type Config struct {
 	SyntheticChains []string
 	EthWSURL        string
 
+	// Graceful shutdown budget for draining in-flight work.
+	ShutdownTimeout time.Duration
+
 	// Aggregator
 	WindowSize time.Duration
 
@@ -74,6 +77,9 @@ func Load(service string) (Config, error) {
 	if c.SyntheticRate, err = envFloat("SYNTHETIC_RATE", 25); err != nil {
 		return Config{}, err
 	}
+	if c.ShutdownTimeout, err = envDuration("SHUTDOWN_TIMEOUT", 10*time.Second); err != nil {
+		return Config{}, err
+	}
 	if c.WindowSize, err = envDuration("WINDOW_SIZE", time.Minute); err != nil {
 		return Config{}, err
 	}
@@ -99,6 +105,9 @@ func (c Config) validate() error {
 	}
 	if c.WindowSize <= 0 {
 		return fmt.Errorf("WINDOW_SIZE must be > 0, got %v", c.WindowSize)
+	}
+	if c.ShutdownTimeout <= 0 {
+		return fmt.Errorf("SHUTDOWN_TIMEOUT must be > 0, got %v", c.ShutdownTimeout)
 	}
 	return nil
 }

@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package streamforge.v1;
+
+option go_package = "github.com/uzairha/streamforge/gen/streamforge/v1;streamforgev1";
+
+import "google/protobuf/timestamp.proto";
+
+// EventType distinguishes the granularity of an on-chain occurrence.
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_BLOCK = 1;
+  EVENT_TYPE_TRANSACTION = 2;
+  EVENT_TYPE_LOG = 3;
+}
+
+// ChainEvent is the canonical, source-agnostic representation of a single
+// on-chain occurrence. Every source (synthetic generator, live Ethereum RPC,
+// replay file) decodes its native payload into this shape before anything
+// downstream sees it.
+message ChainEvent {
+  // Stable dedup key, e.g. "evt:ethereum:<tx_hash>".
+  string id = 1;
+  // Logical chain name: "ethereum", "synthetic", ...
+  string chain = 2;
+  EventType type = 3;
+  uint64 block_number = 4;
+  string block_hash = 5;
+  // Empty for block-level events.
+  string tx_hash = 6;
+  string from_address = 7;
+  string to_address = 8;
+  // Decimal string; a uint64 cannot hold a wei value.
+  string value_wei = 9;
+  uint64 gas_used = 10;
+  // When the ingester observed the event.
+  google.protobuf.Timestamp observed_at = 11;
+  // Timestamp of the containing block.
+  google.protobuf.Timestamp block_time = 12;
+  // Enrichment tags added by the normalizer (contract label, method, ...).
+  map<string, string> attributes = 13;
+}
+
+// Aggregate is one closed time window of a computed metric.
+message Aggregate {
+  string chain = 1;
+  // "events_total", "gas_used_total", "active_addresses", ...
+  string metric = 2;
+  google.protobuf.Timestamp window_start = 3;
+  google.protobuf.Timestamp window_end = 4;
+  double value = 5;
+  // Optional breakdown labels, e.g. {"type": "transaction"}.
+  map<string, string> labels = 6;
+}

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package streamforge.v1;
+
+option go_package = "github.com/uzairha/streamforge/gen/streamforge/v1;streamforgev1";
+
+import "google/protobuf/timestamp.proto";
+import "streamforge/v1/event.proto";
+
+// StreamForgeService is the read API over the pipeline: a live tail of
+// normalized events, historical aggregate windows, and a health snapshot.
+service StreamForgeService {
+  // Server-streaming tail of normalized events, optionally filtered.
+  rpc StreamEvents(StreamEventsRequest) returns (stream ChainEvent);
+  // Query closed aggregate windows from the store.
+  rpc GetAggregates(GetAggregatesRequest) returns (GetAggregatesResponse);
+  // Pipeline throughput / health snapshot.
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+}
+
+message StreamEventsRequest {
+  // "" matches every chain.
+  string chain = 1;
+  // Empty matches every type.
+  repeated EventType types = 2;
+  // "" matches every address; otherwise matches from_address or to_address.
+  string address = 3;
+}
+
+message GetAggregatesRequest {
+  string chain = 1;
+  string metric = 2;
+  google.protobuf.Timestamp since = 3;
+  google.protobuf.Timestamp until = 4;
+}
+
+message GetAggregatesResponse {
+  repeated Aggregate aggregates = 1;
+}
+
+message GetStatsRequest {}
+
+message GetStatsResponse {
+  uint64 events_ingested = 1;
+  uint64 events_normalized = 2;
+  uint64 aggregates_emitted = 3;
+  double events_per_second = 4;
+  google.protobuf.Timestamp since = 5;
+}

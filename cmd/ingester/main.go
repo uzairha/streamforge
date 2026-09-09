@@ -1,12 +1,11 @@
 // Command ingester subscribes to an event source, decodes each occurrence into
-// a canonical ChainEvent, and (from M1) publishes it to the raw-events topic.
-//
-// M0: no Kafka yet. It runs the source and logs throughput so the pipeline is
-// observable end to end from day one.
+// a canonical ChainEvent, and publishes it to the raw-events topic. It exposes
+// Prometheus metrics and a /healthz endpoint on METRICS_ADDR.
 package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,6 +13,7 @@ import (
 
 	streamforgev1 "github.com/uzairha/streamforge/gen/streamforge/v1"
 	"github.com/uzairha/streamforge/internal/config"
+	"github.com/uzairha/streamforge/internal/kafka"
 	"github.com/uzairha/streamforge/internal/source"
 	"github.com/uzairha/streamforge/internal/telemetry"
 )
@@ -29,43 +29,88 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	metrics := telemetry.NewMetrics()
+	go func() {
+		if serr := metrics.Serve(ctx, cfg.MetricsAddr); serr != nil {
+			log.Error("metrics server", "err", serr)
+		}
+	}()
+	log.Info("metrics + health listening", "addr", cfg.MetricsAddr)
+
 	src, err := buildSource(cfg)
 	if err != nil {
 		log.Error("build source", "err", err)
 		os.Exit(1)
 	}
-	log.Info("ingester starting", "source", src.Name(), "rate_per_sec", cfg.SyntheticRate)
+
+	producer, err := kafka.NewProducer(cfg.KafkaBrokers, cfg.TopicRaw, func(topic string, perr error) {
+		if perr != nil {
+			metrics.ProduceErrors.WithLabelValues(topic).Inc()
+			log.Error("produce failed", "topic", topic, "err", perr)
+			return
+		}
+		metrics.EventsProduced.WithLabelValues(topic).Inc()
+	})
+	if err != nil {
+		log.Error("kafka producer", "err", err)
+		os.Exit(1)
+	}
+	defer producer.Close()
+
+	pingCtx, cancelPing := context.WithTimeout(ctx, 10*time.Second)
+	if perr := producer.Ping(pingCtx); perr != nil {
+		cancelPing()
+		log.Error("kafka unreachable", "brokers", cfg.KafkaBrokers, "err", perr)
+		os.Exit(1)
+	}
+	cancelPing()
+
+	log.Info("ingester starting", "source", src.Name(), "topic", cfg.TopicRaw, "brokers", cfg.KafkaBrokers)
+	metrics.SourceUp.Set(1)
 
 	events := make(chan *streamforgev1.ChainEvent, 1024)
-	errc := make(chan error, 1)
-	go func() { errc <- src.Run(ctx, events) }()
+	srcErr := make(chan error, 1)
+	go func() { srcErr <- src.Run(ctx, events) }()
 
-	report := time.NewTicker(5 * time.Second)
+	report := time.NewTicker(10 * time.Second)
 	defer report.Stop()
-	start := time.Now()
-	done := ctx.Done()
-	var count int64
+	var ingested int64
 
 	for {
 		select {
-		case _, ok := <-events:
+		case ev, ok := <-events:
 			if !ok {
-				if rerr := <-errc; rerr != nil {
-					log.Error("source stopped with error", "err", rerr, "events_total", count)
-					os.Exit(1)
+				metrics.SourceUp.Set(0)
+				if rerr := <-srcErr; rerr != nil {
+					log.Error("source stopped with error", "err", rerr)
 				}
-				log.Info("source drained, shutdown complete", "events_total", count)
+				shutdown(log, producer, metrics, cfg.ShutdownTimeout, ingested)
 				return
 			}
-			count++
+			ingested++
+			metrics.EventsIngested.WithLabelValues(ev.GetChain(), ev.GetType().String()).Inc()
+			// Delivery is async; a background context keeps records buffered
+			// through shutdown so Flush can drain them.
+			if perr := producer.Produce(context.Background(), ev); perr != nil {
+				metrics.ProduceErrors.WithLabelValues(cfg.TopicRaw).Inc()
+				log.Error("produce enqueue", "err", perr)
+			}
 		case <-report.C:
-			elapsed := time.Since(start).Seconds()
-			log.Info("throughput", "events_total", count, "events_per_sec", float64(count)/elapsed)
-		case <-done:
-			log.Info("signal received, draining source")
-			done = nil // wait for the source to close the channel
+			log.Info("progress", "ingested_total", ingested, "in_flight", producer.InFlight())
 		}
 	}
+}
+
+func shutdown(log *slog.Logger, p *kafka.Producer, m *telemetry.Metrics, budget time.Duration, ingested int64) {
+	flushCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	start := time.Now()
+	if ferr := p.Flush(flushCtx); ferr != nil {
+		log.Error("flush on shutdown", "err", ferr, "in_flight", p.InFlight())
+	}
+	m.FlushSeconds.Observe(time.Since(start).Seconds())
+	log.Info("shutdown complete", "ingested_total", ingested, "flush_ms", time.Since(start).Milliseconds())
 }
 
 func buildSource(cfg config.Config) (source.Source, error) {

@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 5s
+  scrape_timeout: 3s
+
+scrape_configs:
+  # Services run on the host during local development. When deployed to
+  # Kubernetes (M5) the Helm chart provides pod-level scrape config instead.
+  - job_name: streamforge
+    static_configs:
+      - targets: ["host.docker.internal:2112"]
+        labels: {service: ingester}
+      - targets: ["host.docker.internal:2113"]
+        labels: {service: normalizer}
+      - targets: ["host.docker.internal:2114"]
+        labels: {service: aggregator}
+      - targets: ["host.docker.internal:2115"]
+        labels: {service: api}

@@ -29,8 +29,12 @@ build: ## Build every service binary into ./bin
 	@for s in $(SERVICES); do echo "build $$s"; go build -o bin/$$s ./cmd/$$s; done
 
 .PHONY: test
-test: ## Run tests with the race detector
+test: ## Run all tests with the race detector (integration tests need Docker)
 	go test -race -count=1 ./...
+
+.PHONY: test-unit
+test-unit: ## Run only fast unit tests (no Docker)
+	go test -race -count=1 -short ./...
 
 .PHONY: lint
 lint: ## Run golangci-lint

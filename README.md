@@ -7,13 +7,14 @@ REST/JSON gateway. The whole stack runs locally on Docker Compose and deploys to
 Kubernetes via a Helm chart, with Prometheus/Grafana metrics and OpenTelemetry
 tracing.
 
-> Status: **M1 — ingester → Kafka.** The ingester now decodes source events into
-> protobuf `ChainEvent`s and produces them to `raw-events` via an idempotent,
-> acks=all franz-go producer, exposes Prometheus metrics and `/healthz` on
-> `METRICS_ADDR`, and flushes in-flight records on shutdown. A testcontainers
-> integration test produces to and consumes from a real Redpanda container. The
-> live Ethereum source, the windowing engine, the gRPC server, and the Helm
-> deploy land in M2–M6 (see [Roadmap](#roadmap)).
+> Status: **M2 — live Ethereum source.** `SOURCE=ethereum` subscribes to
+> `newHeads` over the keyless public endpoint and, when `ETH_FETCH_BODIES=true`
+> (the default), fetches each block's body to emit one event per transaction
+> too. Connection drops reconnect with exponential backoff and full jitter
+> (`ETH_MAX_BACKOFF`), resetting once a connection has stayed up 60s; a bounded
+> dedup window (`ETH_DEDUP_WINDOW`) suppresses events replayed by a resubscribe
+> or an endpoint hiccup. The normalizer/aggregator real implementations, the
+> gRPC server, and the Helm deploy land in M3–M6 (see [Roadmap](#roadmap)).
 
 ## Architecture
 
@@ -74,6 +75,7 @@ make lint        # golangci-lint
 
 make up          # start Redpanda, TimescaleDB, Prometheus, Grafana, Jaeger
 make run-ingester   # decode synthetic events -> produce to raw-events
+SOURCE=ethereum make run-ingester   # subscribe to live Ethereum newHeads instead
 make down
 ```
 
@@ -81,7 +83,8 @@ The ingester serves Prometheus metrics and a liveness probe on `METRICS_ADDR`
 (`:2112` by default): `GET /metrics`, `GET /healthz`. Key series:
 `streamforge_events_ingested_total{chain,type}`,
 `streamforge_events_produced_total{topic}`,
-`streamforge_produce_errors_total{topic}`, `streamforge_source_up`.
+`streamforge_produce_errors_total{topic}`, `streamforge_source_up`,
+`streamforge_source_reconnects_total`, `streamforge_events_deduped_total`.
 
 Local endpoints once `make up` is running:
 
@@ -121,7 +124,7 @@ deploy/grafana/     datasource + dashboard provisioning
 |-----------|-------|
 | **M0** | Scaffold, protobuf contracts, config/telemetry, synthetic source, CI |
 | **M1** | Ingester → Kafka producer, Prometheus metrics, health endpoint, integration tests (testcontainers) |
-| M2 | Live Ethereum WebSocket source: reconnect/backoff, dedup |
+| **M2** | Live Ethereum WebSocket source: reconnect/backoff, dedup |
 | M3 | Normalizer + aggregator: consumer groups, tumbling windows, TimescaleDB, checkpointing |
 | M4 | gRPC API (server-streaming) + grpc-gateway REST + demo dashboard + API-key auth |
 | M5 | Dockerfiles, Helm chart, `kind` cluster, Grafana dashboards, OpenTelemetry + Jaeger |

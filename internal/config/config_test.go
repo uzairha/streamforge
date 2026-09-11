@@ -34,6 +34,18 @@ func TestLoad_Defaults(t *testing.T) {
 	if len(cfg.KafkaBrokers) != 1 || cfg.KafkaBrokers[0] != "localhost:19092" {
 		t.Errorf("KafkaBrokers = %v, want [localhost:19092]", cfg.KafkaBrokers)
 	}
+	if cfg.EthWSURL != "wss://ethereum-rpc.publicnode.com" {
+		t.Errorf("EthWSURL = %q, want the public keyless endpoint", cfg.EthWSURL)
+	}
+	if cfg.EthMaxBackoff != 30*time.Second {
+		t.Errorf("EthMaxBackoff = %v, want 30s", cfg.EthMaxBackoff)
+	}
+	if !cfg.EthFetchBodies {
+		t.Error("EthFetchBodies = false, want true")
+	}
+	if cfg.EthDedupWindow != 8192 {
+		t.Errorf("EthDedupWindow = %d, want 8192", cfg.EthDedupWindow)
+	}
 }
 
 func TestLoad_Overrides(t *testing.T) {
@@ -41,6 +53,11 @@ func TestLoad_Overrides(t *testing.T) {
 	t.Setenv("WINDOW_SIZE", "30s")
 	t.Setenv("KAFKA_BROKERS", "a:1, b:2 ,c:3")
 	t.Setenv("TRACING_ENABLED", "true")
+	t.Setenv("SOURCE", "ethereum")
+	t.Setenv("ETH_WS_URL", "ws://localhost:8546")
+	t.Setenv("ETH_MAX_BACKOFF", "5s")
+	t.Setenv("ETH_FETCH_BODIES", "false")
+	t.Setenv("ETH_DEDUP_WINDOW", "256")
 
 	cfg, err := Load("aggregator")
 	if err != nil {
@@ -58,6 +75,18 @@ func TestLoad_Overrides(t *testing.T) {
 	if !cfg.TracingEnabled {
 		t.Error("TracingEnabled = false, want true")
 	}
+	if cfg.EthWSURL != "ws://localhost:8546" {
+		t.Errorf("EthWSURL = %q, want ws://localhost:8546", cfg.EthWSURL)
+	}
+	if cfg.EthMaxBackoff != 5*time.Second {
+		t.Errorf("EthMaxBackoff = %v, want 5s", cfg.EthMaxBackoff)
+	}
+	if cfg.EthFetchBodies {
+		t.Error("EthFetchBodies = true, want false")
+	}
+	if cfg.EthDedupWindow != 256 {
+		t.Errorf("EthDedupWindow = %d, want 256", cfg.EthDedupWindow)
+	}
 }
 
 func TestLoad_InvalidValues(t *testing.T) {
@@ -70,6 +99,19 @@ func TestLoad_InvalidValues(t *testing.T) {
 		"bad bool":           {"TRACING_ENABLED": "maybe"},
 		"negative shutdown":  {"SHUTDOWN_TIMEOUT": "-1s"},
 		"bad shutdown value": {"SHUTDOWN_TIMEOUT": "soon"},
+		"bad eth backoff":    {"SOURCE": "ethereum", "ETH_MAX_BACKOFF": "not-a-duration"},
+		"non-positive eth backoff": {
+			"SOURCE": "ethereum", "ETH_MAX_BACKOFF": "0s",
+		},
+		"bad eth dedup window": {
+			"SOURCE": "ethereum", "ETH_DEDUP_WINDOW": "-1",
+		},
+		"eth ws url missing scheme": {
+			"SOURCE": "ethereum", "ETH_WS_URL": "ethereum-rpc.publicnode.com",
+		},
+		"bad eth fetch bodies bool": {
+			"SOURCE": "ethereum", "ETH_FETCH_BODIES": "sure",
+		},
 	}
 	for name, envs := range cases {
 		t.Run(name, func(t *testing.T) {

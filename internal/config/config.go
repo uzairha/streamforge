@@ -31,6 +31,9 @@ type Config struct {
 	SyntheticRate   float64
 	SyntheticChains []string
 	EthWSURL        string
+	EthMaxBackoff   time.Duration // ceiling for the reconnect backoff
+	EthFetchBodies  bool          // fetch full blocks and emit one event per tx
+	EthDedupWindow  int           // recent event IDs kept to suppress replays
 
 	// Graceful shutdown budget for draining in-flight work.
 	ShutdownTimeout time.Duration
@@ -86,6 +89,15 @@ func Load(service string) (Config, error) {
 	if c.TracingEnabled, err = envBool("TRACING_ENABLED", false); err != nil {
 		return Config{}, err
 	}
+	if c.EthMaxBackoff, err = envDuration("ETH_MAX_BACKOFF", 30*time.Second); err != nil {
+		return Config{}, err
+	}
+	if c.EthFetchBodies, err = envBool("ETH_FETCH_BODIES", true); err != nil {
+		return Config{}, err
+	}
+	if c.EthDedupWindow, err = envInt("ETH_DEDUP_WINDOW", 8192); err != nil {
+		return Config{}, err
+	}
 
 	if err := c.validate(); err != nil {
 		return Config{}, err
@@ -108,6 +120,17 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be > 0, got %v", c.ShutdownTimeout)
+	}
+	if c.Source == "ethereum" {
+		if !strings.HasPrefix(c.EthWSURL, "ws://") && !strings.HasPrefix(c.EthWSURL, "wss://") {
+			return fmt.Errorf("ETH_WS_URL must be a ws:// or wss:// URL, got %q", c.EthWSURL)
+		}
+		if c.EthMaxBackoff <= 0 {
+			return fmt.Errorf("ETH_MAX_BACKOFF must be > 0, got %v", c.EthMaxBackoff)
+		}
+		if c.EthDedupWindow <= 0 {
+			return fmt.Errorf("ETH_DEDUP_WINDOW must be > 0, got %d", c.EthDedupWindow)
+		}
 	}
 	return nil
 }
@@ -158,6 +181,18 @@ func envBool(key string, def bool) (bool, error) {
 		return false, fmt.Errorf("%s: %w", key, err)
 	}
 	return b, nil
+}
+
+func envInt(key string, def int) (int, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	return n, nil
 }
 
 func envDuration(key string, def time.Duration) (time.Duration, error) {

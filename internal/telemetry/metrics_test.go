@@ -39,6 +39,8 @@ func TestMetrics_HealthzAndMetrics(t *testing.T) {
 		s := string(body)
 		for _, want := range []string{
 			"streamforge_events_ingested_total",
+			"streamforge_source_reconnects_total",
+			"streamforge_events_deduped_total",
 			"go_goroutines",              // Go collector registered
 			"process_start_time_seconds", // process collector registered
 		} {

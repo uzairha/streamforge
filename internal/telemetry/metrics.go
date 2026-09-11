@@ -15,11 +15,13 @@ import (
 // Metrics holds the ingester's Prometheus collectors on a private registry, so
 // constructing it twice (e.g. in tests) never panics on duplicate registration.
 type Metrics struct {
-	EventsIngested *prometheus.CounterVec // by chain, type
-	EventsProduced *prometheus.CounterVec // by topic
-	ProduceErrors  *prometheus.CounterVec // by topic
-	FlushSeconds   prometheus.Histogram
-	SourceUp       prometheus.Gauge
+	EventsIngested   *prometheus.CounterVec // by chain, type
+	EventsProduced   *prometheus.CounterVec // by topic
+	ProduceErrors    *prometheus.CounterVec // by topic
+	FlushSeconds     prometheus.Histogram
+	SourceUp         prometheus.Gauge
+	SourceReconnects prometheus.Counter
+	EventsDeduped    prometheus.Counter
 
 	reg *prometheus.Registry
 }
@@ -56,6 +58,14 @@ func NewMetrics() *Metrics {
 		SourceUp: f.NewGauge(prometheus.GaugeOpts{
 			Name: "streamforge_source_up",
 			Help: "1 while the event source is connected, 0 otherwise.",
+		}),
+		SourceReconnects: f.NewCounter(prometheus.CounterOpts{
+			Name: "streamforge_source_reconnects_total",
+			Help: "Reconnect attempts made by the event source after a dropped connection.",
+		}),
+		EventsDeduped: f.NewCounter(prometheus.CounterOpts{
+			Name: "streamforge_events_deduped_total",
+			Help: "Events suppressed by the source as duplicates of one already seen.",
 		}),
 	}
 }

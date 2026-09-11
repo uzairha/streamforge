@@ -3,6 +3,7 @@ module github.com/uzairha/streamforge
 go 1.27.1
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/prometheus/client_golang v1.24.1
 	github.com/testcontainers/testcontainers-go/modules/redpanda v0.44.0
 	github.com/twmb/franz-go v1.21.6

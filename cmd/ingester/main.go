@@ -37,7 +37,7 @@ func main() {
 	}()
 	log.Info("metrics + health listening", "addr", cfg.MetricsAddr)
 
-	src, err := buildSource(cfg)
+	src, err := buildSource(cfg, metrics)
 	if err != nil {
 		log.Error("build source", "err", err)
 		os.Exit(1)
@@ -113,12 +113,18 @@ func shutdown(log *slog.Logger, p *kafka.Producer, m *telemetry.Metrics, budget 
 	log.Info("shutdown complete", "ingested_total", ingested, "flush_ms", time.Since(start).Milliseconds())
 }
 
-func buildSource(cfg config.Config) (source.Source, error) {
+func buildSource(cfg config.Config, m *telemetry.Metrics) (source.Source, error) {
 	switch cfg.Source {
 	case "synthetic":
 		return source.NewSynthetic(cfg.SyntheticRate, cfg.SyntheticChains), nil
-	default: // "ethereum" is validated by config but implemented in M2
-		return nil, &notImplementedError{what: "source " + cfg.Source + " (lands in M2)"}
+	case "ethereum":
+		hooks := source.Hooks{
+			OnReconnect: m.SourceReconnects.Inc,
+			OnDedup:     m.EventsDeduped.Inc,
+		}
+		return source.NewEthereum(cfg.EthWSURL, cfg.EthMaxBackoff, cfg.EthFetchBodies, cfg.EthDedupWindow, hooks), nil
+	default:
+		return nil, &notImplementedError{what: "source " + cfg.Source}
 	}
 }
 

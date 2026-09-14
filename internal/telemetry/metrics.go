@@ -71,9 +71,19 @@ func NewMetrics() *Metrics {
 }
 
 // Handler serves /metrics (Prometheus exposition) and /healthz (liveness).
-func (m *Metrics) Handler() http.Handler {
+func (m *Metrics) Handler() http.Handler { return registryHandler(m.reg) }
+
+// Serve runs the metrics/health HTTP server until ctx is cancelled, then shuts
+// it down within a short grace period. It returns nil on a clean shutdown.
+func (m *Metrics) Serve(ctx context.Context, addr string) error {
+	return serveHandler(ctx, addr, m.Handler())
+}
+
+// registryHandler serves /metrics (Prometheus exposition for reg) and
+// /healthz (liveness), shared by every service's *Metrics type.
+func registryHandler(reg *prometheus.Registry) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{}))
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -82,12 +92,12 @@ func (m *Metrics) Handler() http.Handler {
 	return mux
 }
 
-// Serve runs the metrics/health HTTP server until ctx is cancelled, then shuts
-// it down within a short grace period. It returns nil on a clean shutdown.
-func (m *Metrics) Serve(ctx context.Context, addr string) error {
+// serveHandler runs handler until ctx is cancelled, then shuts it down
+// within a short grace period. It returns nil on a clean shutdown.
+func serveHandler(ctx context.Context, addr string, handler http.Handler) error {
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           m.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

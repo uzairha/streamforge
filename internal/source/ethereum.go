@@ -45,7 +45,7 @@ type Ethereum struct {
 }
 
 // NewEthereum builds a live source against wsURL (e.g.
-// "wss://ethereum-rpc.publicnode.com"). fetchBodies controls whether
+// "wss://ethereum.publicnode.com"). fetchBodies controls whether
 // transaction-level events are emitted alongside block events; dedupWindow
 // bounds how many recent event IDs are retained for duplicate suppression.
 func NewEthereum(wsURL string, maxBackoff time.Duration, fetchBodies bool, dedupWindow int, hooks Hooks) *Ethereum {

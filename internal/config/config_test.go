@@ -28,13 +28,16 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.WindowSize != time.Minute {
 		t.Errorf("WindowSize = %v, want 1m", cfg.WindowSize)
 	}
+	if cfg.AllowedLateness != 30*time.Second {
+		t.Errorf("AllowedLateness = %v, want 30s", cfg.AllowedLateness)
+	}
 	if cfg.ShutdownTimeout != 10*time.Second {
 		t.Errorf("ShutdownTimeout = %v, want 10s", cfg.ShutdownTimeout)
 	}
 	if len(cfg.KafkaBrokers) != 1 || cfg.KafkaBrokers[0] != "localhost:19092" {
 		t.Errorf("KafkaBrokers = %v, want [localhost:19092]", cfg.KafkaBrokers)
 	}
-	if cfg.EthWSURL != "wss://ethereum-rpc.publicnode.com" {
+	if cfg.EthWSURL != "wss://ethereum.publicnode.com" {
 		t.Errorf("EthWSURL = %q, want the public keyless endpoint", cfg.EthWSURL)
 	}
 	if cfg.EthMaxBackoff != 30*time.Second {
@@ -51,6 +54,7 @@ func TestLoad_Defaults(t *testing.T) {
 func TestLoad_Overrides(t *testing.T) {
 	t.Setenv("SYNTHETIC_RATE", "100")
 	t.Setenv("WINDOW_SIZE", "30s")
+	t.Setenv("ALLOWED_LATENESS", "5s")
 	t.Setenv("KAFKA_BROKERS", "a:1, b:2 ,c:3")
 	t.Setenv("TRACING_ENABLED", "true")
 	t.Setenv("SOURCE", "ethereum")
@@ -68,6 +72,9 @@ func TestLoad_Overrides(t *testing.T) {
 	}
 	if cfg.WindowSize != 30*time.Second {
 		t.Errorf("WindowSize = %v, want 30s", cfg.WindowSize)
+	}
+	if cfg.AllowedLateness != 5*time.Second {
+		t.Errorf("AllowedLateness = %v, want 5s", cfg.AllowedLateness)
 	}
 	if got, want := cfg.KafkaBrokers, []string{"a:1", "b:2", "c:3"}; !equal(got, want) {
 		t.Errorf("KafkaBrokers = %v, want %v", got, want)
@@ -96,6 +103,8 @@ func TestLoad_InvalidValues(t *testing.T) {
 		"unparseable rate":   {"SYNTHETIC_RATE": "fast"},
 		"unknown source":     {"SOURCE": "dogecoin"},
 		"bad duration":       {"WINDOW_SIZE": "10 fortnights"},
+		"negative lateness":  {"ALLOWED_LATENESS": "-1s"},
+		"bad lateness value": {"ALLOWED_LATENESS": "soon"},
 		"bad bool":           {"TRACING_ENABLED": "maybe"},
 		"negative shutdown":  {"SHUTDOWN_TIMEOUT": "-1s"},
 		"bad shutdown value": {"SHUTDOWN_TIMEOUT": "soon"},

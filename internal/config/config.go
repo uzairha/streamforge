@@ -39,7 +39,8 @@ type Config struct {
 	ShutdownTimeout time.Duration
 
 	// Aggregator
-	WindowSize time.Duration
+	WindowSize      time.Duration
+	AllowedLateness time.Duration // watermark lag before a window closes
 
 	// Store (aggregator, api)
 	PostgresDSN string
@@ -67,7 +68,7 @@ func Load(service string) (Config, error) {
 		ConsumerGroup:   env("CONSUMER_GROUP", "streamforge-"+service),
 		Source:          env("SOURCE", "synthetic"),
 		SyntheticChains: envList("SYNTHETIC_CHAINS", []string{"synthetic"}),
-		EthWSURL:        env("ETH_WS_URL", "wss://ethereum-rpc.publicnode.com"),
+		EthWSURL:        env("ETH_WS_URL", "wss://ethereum.publicnode.com"),
 		PostgresDSN:     env("POSTGRES_DSN", "postgres://streamforge:streamforge@localhost:5432/streamforge?sslmode=disable"),
 		GRPCAddr:        env("GRPC_ADDR", ":9090"),
 		HTTPAddr:        env("HTTP_ADDR", ":8080"),
@@ -84,6 +85,9 @@ func Load(service string) (Config, error) {
 		return Config{}, err
 	}
 	if c.WindowSize, err = envDuration("WINDOW_SIZE", time.Minute); err != nil {
+		return Config{}, err
+	}
+	if c.AllowedLateness, err = envDuration("ALLOWED_LATENESS", 30*time.Second); err != nil {
 		return Config{}, err
 	}
 	if c.TracingEnabled, err = envBool("TRACING_ENABLED", false); err != nil {
@@ -117,6 +121,9 @@ func (c Config) validate() error {
 	}
 	if c.WindowSize <= 0 {
 		return fmt.Errorf("WINDOW_SIZE must be > 0, got %v", c.WindowSize)
+	}
+	if c.AllowedLateness < 0 {
+		return fmt.Errorf("ALLOWED_LATENESS must be >= 0, got %v", c.AllowedLateness)
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be > 0, got %v", c.ShutdownTimeout)

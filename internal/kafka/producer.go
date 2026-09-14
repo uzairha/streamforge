@@ -79,6 +79,36 @@ func (p *Producer) Produce(ctx context.Context, ev *streamforgev1.ChainEvent) er
 	return nil
 }
 
+// ProduceSync enqueues ev like Produce, but blocks until Kafka acknowledges
+// or rejects it and returns that outcome directly, instead of only via
+// OnResult. Use it when the caller must not proceed — e.g. commit the
+// consumer offset that triggered ev — until this specific record is
+// durable.
+func (p *Producer) ProduceSync(ctx context.Context, ev *streamforgev1.ChainEvent) error {
+	value, err := proto.Marshal(ev)
+	if err != nil {
+		return fmt.Errorf("kafka: marshal event %s: %w", ev.GetId(), err)
+	}
+	rec := &kgo.Record{
+		Topic: p.topic,
+		Key:   []byte(partitionKey(ev)),
+		Value: value,
+	}
+	p.inFlight.Add(1)
+	done := make(chan error, 1)
+	p.client.Produce(ctx, rec, func(_ *kgo.Record, err error) {
+		p.inFlight.Add(-1)
+		p.onResult(p.topic, err)
+		done <- err
+	})
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // InFlight reports records enqueued but not yet acknowledged.
 func (p *Producer) InFlight() int64 { return p.inFlight.Load() }
 

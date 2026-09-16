@@ -46,6 +46,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if !cfg.EthFetchBodies {
 		t.Error("EthFetchBodies = false, want true")
 	}
+	if cfg.PrometheusURL != "http://localhost:9091" {
+		t.Errorf("PrometheusURL = %q, want http://localhost:9091", cfg.PrometheusURL)
+	}
 	if cfg.EthDedupWindow != 8192 {
 		t.Errorf("EthDedupWindow = %d, want 8192", cfg.EthDedupWindow)
 	}
@@ -62,6 +65,7 @@ func TestLoad_Overrides(t *testing.T) {
 	t.Setenv("ETH_MAX_BACKOFF", "5s")
 	t.Setenv("ETH_FETCH_BODIES", "false")
 	t.Setenv("ETH_DEDUP_WINDOW", "256")
+	t.Setenv("PROMETHEUS_URL", "http://prom:9090")
 
 	cfg, err := Load("aggregator")
 	if err != nil {
@@ -90,6 +94,9 @@ func TestLoad_Overrides(t *testing.T) {
 	}
 	if cfg.EthFetchBodies {
 		t.Error("EthFetchBodies = true, want false")
+	}
+	if cfg.PrometheusURL != "http://prom:9090" {
+		t.Errorf("PrometheusURL = %q, want http://prom:9090", cfg.PrometheusURL)
 	}
 	if cfg.EthDedupWindow != 256 {
 		t.Errorf("EthDedupWindow = %d, want 256", cfg.EthDedupWindow)

@@ -46,9 +46,10 @@ type Config struct {
 	PostgresDSN string
 
 	// API
-	GRPCAddr string
-	HTTPAddr string
-	APIKey   string
+	GRPCAddr      string
+	HTTPAddr      string
+	APIKey        string // empty disables auth — fine for local dev, required otherwise
+	PrometheusURL string // queried by GetStats for pipeline throughput
 
 	// Telemetry
 	MetricsAddr    string
@@ -73,6 +74,7 @@ func Load(service string) (Config, error) {
 		GRPCAddr:        env("GRPC_ADDR", ":9090"),
 		HTTPAddr:        env("HTTP_ADDR", ":8080"),
 		APIKey:          env("API_KEY", ""),
+		PrometheusURL:   env("PROMETHEUS_URL", "http://localhost:9091"),
 		MetricsAddr:     env("METRICS_ADDR", ":2112"),
 		OTLPEndpoint:    env("OTLP_ENDPOINT", "localhost:4317"),
 	}

@@ -8,12 +8,19 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	streamforgev1 "github.com/uzairha/streamforge/gen/streamforge/v1"
 )
+
+// maxQueryRows caps a single QueryAggregates call so a broad, unbounded
+// filter (e.g. no chain, metric, or time range at all) can't return an
+// unbounded result set to the API.
+const maxQueryRows = 10_000
 
 //go:embed schema.sql
 var schema string
@@ -79,6 +86,79 @@ func (s *Store) UpsertAggregates(ctx context.Context, aggs []*streamforgev1.Aggr
 		}
 	}
 	return nil
+}
+
+// AggregateQuery filters a QueryAggregates call. A zero value for any field
+// means "don't filter on this": Chain/Metric "" match every chain/metric,
+// and a zero Since/Until leaves that end of the time range unbounded.
+type AggregateQuery struct {
+	Chain  string
+	Metric string
+	Since  time.Time
+	Until  time.Time
+}
+
+const querySQL = `
+SELECT chain, metric, window_start, window_end, value, labels
+FROM aggregates
+WHERE ($1 = '' OR chain = $1)
+  AND ($2 = '' OR metric = $2)
+  AND ($3::timestamptz IS NULL OR window_start >= $3)
+  AND ($4::timestamptz IS NULL OR window_start < $4)
+ORDER BY window_start, metric
+LIMIT $5
+`
+
+// QueryAggregates returns aggregates matching q, oldest window first, capped
+// at maxQueryRows.
+func (s *Store) QueryAggregates(ctx context.Context, q AggregateQuery) ([]*streamforgev1.Aggregate, error) {
+	since := nilIfZero(q.Since)
+	until := nilIfZero(q.Until)
+
+	rows, err := s.pool.Query(ctx, querySQL, q.Chain, q.Metric, since, until, maxQueryRows)
+	if err != nil {
+		return nil, fmt.Errorf("store: query aggregates: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*streamforgev1.Aggregate
+	for rows.Next() {
+		var (
+			chain, metric          string
+			windowStart, windowEnd time.Time
+			value                  float64
+			labelsJSON             []byte
+		)
+		if err := rows.Scan(&chain, &metric, &windowStart, &windowEnd, &value, &labelsJSON); err != nil {
+			return nil, fmt.Errorf("store: scan aggregate row: %w", err)
+		}
+		var labels map[string]string
+		if err := json.Unmarshal(labelsJSON, &labels); err != nil {
+			return nil, fmt.Errorf("store: decode labels: %w", err)
+		}
+		if len(labels) == 0 {
+			labels = nil
+		}
+		out = append(out, &streamforgev1.Aggregate{
+			Chain:       chain,
+			Metric:      metric,
+			WindowStart: timestamppb.New(windowStart),
+			WindowEnd:   timestamppb.New(windowEnd),
+			Value:       value,
+			Labels:      labels,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: query aggregates: %w", err)
+	}
+	return out, nil
+}
+
+func nilIfZero(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // encodeLabels renders labels as JSON for storage and a deterministic,

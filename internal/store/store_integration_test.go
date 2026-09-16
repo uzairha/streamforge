@@ -132,3 +132,78 @@ func TestStore_Integration_DistinctLabelsAreDistinctRows(t *testing.T) {
 		t.Fatalf("row count = %d, want 3 (one per distinct label set)", count)
 	}
 }
+
+func TestStore_Integration_QueryAggregatesFilters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker; skipped in -short mode")
+	}
+	ctx := context.Background()
+	s := startStore(ctx, t)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	aggs := []*streamforgev1.Aggregate{
+		aggregate("ethereum", "events_total", base, 10, nil),
+		aggregate("ethereum", "gas_used_total", base, 500, nil),
+		aggregate("ethereum", "events_total", base.Add(time.Minute), 20, nil),
+		aggregate("solana", "events_total", base, 99, nil),
+	}
+	if err := s.UpsertAggregates(ctx, aggs); err != nil {
+		t.Fatalf("UpsertAggregates: %v", err)
+	}
+
+	t.Run("no filter returns everything", func(t *testing.T) {
+		got, err := s.QueryAggregates(ctx, AggregateQuery{})
+		if err != nil {
+			t.Fatalf("QueryAggregates: %v", err)
+		}
+		if len(got) != 4 {
+			t.Fatalf("len = %d, want 4", len(got))
+		}
+	})
+
+	t.Run("chain filter", func(t *testing.T) {
+		got, err := s.QueryAggregates(ctx, AggregateQuery{Chain: "solana"})
+		if err != nil {
+			t.Fatalf("QueryAggregates: %v", err)
+		}
+		if len(got) != 1 || got[0].GetChain() != "solana" {
+			t.Fatalf("got = %v, want exactly the solana row", got)
+		}
+	})
+
+	t.Run("metric filter", func(t *testing.T) {
+		got, err := s.QueryAggregates(ctx, AggregateQuery{Chain: "ethereum", Metric: "gas_used_total"})
+		if err != nil {
+			t.Fatalf("QueryAggregates: %v", err)
+		}
+		if len(got) != 1 || got[0].GetValue() != 500 {
+			t.Fatalf("got = %v, want exactly the gas_used_total row", got)
+		}
+	})
+
+	t.Run("time range excludes the later window", func(t *testing.T) {
+		got, err := s.QueryAggregates(ctx, AggregateQuery{
+			Chain: "ethereum", Metric: "events_total",
+			Until: base.Add(30 * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("QueryAggregates: %v", err)
+		}
+		if len(got) != 1 || got[0].GetValue() != 10 {
+			t.Fatalf("got = %v, want only the base-window row (value 10)", got)
+		}
+	})
+
+	t.Run("time range excludes the earlier window", func(t *testing.T) {
+		got, err := s.QueryAggregates(ctx, AggregateQuery{
+			Chain: "ethereum", Metric: "events_total",
+			Since: base.Add(30 * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("QueryAggregates: %v", err)
+		}
+		if len(got) != 1 || got[0].GetValue() != 20 {
+			t.Fatalf("got = %v, want only the later-window row (value 20)", got)
+		}
+	})
+}

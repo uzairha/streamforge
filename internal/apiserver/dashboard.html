@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>StreamForge</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 960px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 0.25rem; }
+  .subtitle { color: #888; margin-top: 0; margin-bottom: 1.5rem; }
+  .key-bar { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; align-items: center; }
+  .key-bar input {
+    flex: 1;
+    padding: 0.4rem 0.6rem;
+    font-family: monospace;
+  }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .stat {
+    border: 1px solid #8883;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+  }
+  .stat .value { font-size: 1.6rem; font-weight: 600; }
+  .stat .label { color: #888; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #8882; }
+  th { color: #888; font-weight: 500; }
+  #error { color: #d33; margin-bottom: 1rem; min-height: 1.2em; }
+</style>
+</head>
+<body>
+  <h1>StreamForge</h1>
+  <p class="subtitle">Live pipeline stats and recent aggregate windows.</p>
+
+  <div class="key-bar">
+    <label for="apiKey">X-Api-Key</label>
+    <input id="apiKey" type="text" placeholder="leave blank if auth is disabled">
+  </div>
+  <div id="error"></div>
+
+  <div class="stats" id="stats"></div>
+
+  <h2>Recent aggregates</h2>
+  <table>
+    <thead>
+      <tr><th>Chain</th><th>Metric</th><th>Window start</th><th>Value</th></tr>
+    </thead>
+    <tbody id="aggregatesBody"></tbody>
+  </table>
+
+<script>
+const KEY_STORAGE = "streamforge_dashboard_api_key";
+const apiKeyInput = document.getElementById("apiKey");
+apiKeyInput.value = localStorage.getItem(KEY_STORAGE) || "";
+apiKeyInput.addEventListener("input", () => {
+  localStorage.setItem(KEY_STORAGE, apiKeyInput.value);
+});
+
+async function apiGet(path) {
+  const headers = {};
+  if (apiKeyInput.value) headers["X-Api-Key"] = apiKeyInput.value;
+  const resp = await fetch(path, { headers });
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`${resp.status}: ${body}`);
+  }
+  return resp.json();
+}
+
+function fmtNumber(n) {
+  return new Intl.NumberFormat().format(Math.round(n));
+}
+
+function renderStats(stats) {
+  const tiles = [
+    ["Events ingested", fmtNumber(stats.eventsIngested || 0)],
+    ["Events normalized", fmtNumber(stats.eventsNormalized || 0)],
+    ["Aggregates emitted", fmtNumber(stats.aggregatesEmitted || 0)],
+    ["Events / sec (1m rate)", (stats.eventsPerSecond || 0).toFixed(1)],
+  ];
+  document.getElementById("stats").innerHTML = tiles.map(([label, value]) => `
+    <div class="stat">
+      <div class="value">${value}</div>
+      <div class="label">${label}</div>
+    </div>
+  `).join("");
+}
+
+function renderAggregates(aggregates) {
+  const rows = (aggregates || []).slice(-25).reverse().map(a => `
+    <tr>
+      <td>${a.chain}</td>
+      <td>${a.metric}${a.labels && a.labels.type ? ` (${a.labels.type})` : ""}</td>
+      <td>${a.windowStart}</td>
+      <td>${Number(a.value).toLocaleString()}</td>
+    </tr>
+  `).join("");
+  document.getElementById("aggregatesBody").innerHTML = rows;
+}
+
+async function tick() {
+  const errorEl = document.getElementById("error");
+  try {
+    const [stats, aggregatesResp] = await Promise.all([
+      apiGet("/v1/stats"),
+      apiGet("/v1/aggregates?metric=events_total"),
+    ]);
+    renderStats(stats);
+    renderAggregates(aggregatesResp.aggregates);
+    errorEl.textContent = "";
+  } catch (err) {
+    errorEl.textContent = `Failed to load: ${err.message}`;
+  }
+}
+
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>

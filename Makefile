@@ -5,8 +5,9 @@ export PATH := $(GOBIN):$(PATH)
 SERVICES := ingester normalizer aggregator api
 COMPOSE  := docker compose -f deploy/compose/docker-compose.yml
 
-PROTOC_GEN_GO_VERSION      := v1.36.12
-PROTOC_GEN_GO_GRPC_VERSION := v1.5.1
+PROTOC_GEN_GO_VERSION         := v1.36.12
+PROTOC_GEN_GO_GRPC_VERSION    := v1.5.1
+PROTOC_GEN_GRPC_GATEWAY_VERSION := v2.30.0
 
 .PHONY: help
 help: ## List targets
@@ -17,6 +18,7 @@ help: ## List targets
 tools: ## Install pinned codegen plugins into $(GOBIN)
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+	go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@$(PROTOC_GEN_GRPC_GATEWAY_VERSION)
 
 .PHONY: proto
 proto: ## Lint protobuf and regenerate ./gen

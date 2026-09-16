@@ -30,8 +30,12 @@ const (
 //
 // StreamForgeService is the read API over the pipeline: a live tail of
 // normalized events, historical aggregate windows, and a health snapshot.
+// Every RPC also requires an API key (see the api-key interceptor in
+// cmd/api), supplied as the "X-API-Key" header over both gRPC and the REST
+// gateway.
 type StreamForgeServiceClient interface {
-	// Server-streaming tail of normalized events, optionally filtered.
+	// Server-streaming tail of normalized events, optionally filtered. Over
+	// REST this is chunked newline-delimited JSON, one ChainEvent per line.
 	StreamEvents(ctx context.Context, in *StreamEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChainEvent], error)
 	// Query closed aggregate windows from the store.
 	GetAggregates(ctx context.Context, in *GetAggregatesRequest, opts ...grpc.CallOption) (*GetAggregatesResponse, error)
@@ -92,8 +96,12 @@ func (c *streamForgeServiceClient) GetStats(ctx context.Context, in *GetStatsReq
 //
 // StreamForgeService is the read API over the pipeline: a live tail of
 // normalized events, historical aggregate windows, and a health snapshot.
+// Every RPC also requires an API key (see the api-key interceptor in
+// cmd/api), supplied as the "X-API-Key" header over both gRPC and the REST
+// gateway.
 type StreamForgeServiceServer interface {
-	// Server-streaming tail of normalized events, optionally filtered.
+	// Server-streaming tail of normalized events, optionally filtered. Over
+	// REST this is chunked newline-delimited JSON, one ChainEvent per line.
 	StreamEvents(*StreamEventsRequest, grpc.ServerStreamingServer[ChainEvent]) error
 	// Query closed aggregate windows from the store.
 	GetAggregates(context.Context, *GetAggregatesRequest) (*GetAggregatesResponse, error)

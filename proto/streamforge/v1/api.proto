@@ -4,18 +4,35 @@ package streamforge.v1;
 
 option go_package = "github.com/uzairha/streamforge/gen/streamforge/v1;streamforgev1";
 
+import "google/api/annotations.proto";
 import "google/protobuf/timestamp.proto";
 import "streamforge/v1/event.proto";
 
 // StreamForgeService is the read API over the pipeline: a live tail of
 // normalized events, historical aggregate windows, and a health snapshot.
+// Every RPC also requires an API key (see the api-key interceptor in
+// cmd/api), supplied as the "X-API-Key" header over both gRPC and the REST
+// gateway.
 service StreamForgeService {
-  // Server-streaming tail of normalized events, optionally filtered.
-  rpc StreamEvents(StreamEventsRequest) returns (stream ChainEvent);
+  // Server-streaming tail of normalized events, optionally filtered. Over
+  // REST this is chunked newline-delimited JSON, one ChainEvent per line.
+  rpc StreamEvents(StreamEventsRequest) returns (stream ChainEvent) {
+    option (google.api.http) = {
+      get: "/v1/events"
+    };
+  }
   // Query closed aggregate windows from the store.
-  rpc GetAggregates(GetAggregatesRequest) returns (GetAggregatesResponse);
+  rpc GetAggregates(GetAggregatesRequest) returns (GetAggregatesResponse) {
+    option (google.api.http) = {
+      get: "/v1/aggregates"
+    };
+  }
   // Pipeline throughput / health snapshot.
-  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse) {
+    option (google.api.http) = {
+      get: "/v1/stats"
+    };
+  }
 }
 
 message StreamEventsRequest {

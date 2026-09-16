@@ -7,6 +7,7 @@
 package streamforgev1
 
 import (
+	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -313,7 +314,7 @@ var File_streamforge_v1_api_proto protoreflect.FileDescriptor
 
 const file_streamforge_v1_api_proto_rawDesc = "" +
 	"\n" +
-	"\x18streamforge/v1/api.proto\x12\x0estreamforge.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1astreamforge/v1/event.proto\"v\n" +
+	"\x18streamforge/v1/api.proto\x12\x0estreamforge.v1\x1a\x1cgoogle/api/annotations.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1astreamforge/v1/event.proto\"v\n" +
 	"\x13StreamEventsRequest\x12\x14\n" +
 	"\x05chain\x18\x01 \x01(\tR\x05chain\x12/\n" +
 	"\x05types\x18\x02 \x03(\x0e2\x19.streamforge.v1.EventTypeR\x05types\x12\x18\n" +
@@ -333,11 +334,12 @@ const file_streamforge_v1_api_proto_rawDesc = "" +
 	"\x11events_normalized\x18\x02 \x01(\x04R\x10eventsNormalized\x12-\n" +
 	"\x12aggregates_emitted\x18\x03 \x01(\x04R\x11aggregatesEmitted\x12*\n" +
 	"\x11events_per_second\x18\x04 \x01(\x01R\x0feventsPerSecond\x120\n" +
-	"\x05since\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x05since2\x94\x02\n" +
-	"\x12StreamForgeService\x12Q\n" +
-	"\fStreamEvents\x12#.streamforge.v1.StreamEventsRequest\x1a\x1a.streamforge.v1.ChainEvent0\x01\x12\\\n" +
-	"\rGetAggregates\x12$.streamforge.v1.GetAggregatesRequest\x1a%.streamforge.v1.GetAggregatesResponse\x12M\n" +
-	"\bGetStats\x12\x1f.streamforge.v1.GetStatsRequest\x1a .streamforge.v1.GetStatsResponseBAZ?github.com/uzairha/streamforge/gen/streamforge/v1;streamforgev1b\x06proto3"
+	"\x05since\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x05since2\xd3\x02\n" +
+	"\x12StreamForgeService\x12e\n" +
+	"\fStreamEvents\x12#.streamforge.v1.StreamEventsRequest\x1a\x1a.streamforge.v1.ChainEvent\"\x12\x82\xd3\xe4\x93\x02\f\x12\n" +
+	"/v1/events0\x01\x12t\n" +
+	"\rGetAggregates\x12$.streamforge.v1.GetAggregatesRequest\x1a%.streamforge.v1.GetAggregatesResponse\"\x16\x82\xd3\xe4\x93\x02\x10\x12\x0e/v1/aggregates\x12`\n" +
+	"\bGetStats\x12\x1f.streamforge.v1.GetStatsRequest\x1a .streamforge.v1.GetStatsResponse\"\x11\x82\xd3\xe4\x93\x02\v\x12\t/v1/statsBAZ?github.com/uzairha/streamforge/gen/streamforge/v1;streamforgev1b\x06proto3"
 
 var (
 	file_streamforge_v1_api_proto_rawDescOnce sync.Once

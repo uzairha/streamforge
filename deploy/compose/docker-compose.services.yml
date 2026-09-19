@@ -1,0 +1,80 @@
+# Overlay that runs the four StreamForge services as containers alongside the
+# infra in docker-compose.yml:
+#
+#   make up-full      (= docker compose -f docker-compose.yml -f this up -d)
+#
+# The base file deliberately leaves the services out: during development they
+# run on the host via `make run-ingester` for a fast edit-run loop, and
+# deploy/prometheus/prometheus.yml scrapes them at host.docker.internal.
+# Here they run inside the compose network instead, so every address changes —
+# brokers on the internal listener, Postgres/Jaeger/Prometheus by service name,
+# and a scrape config pointed at containers rather than the host.
+#
+# Each container has its own network namespace, so all four expose metrics on
+# :2112 instead of the 2112-2115 split the host-run mode needs.
+
+services:
+  prometheus:
+    volumes:
+      - ../prometheus/prometheus-containers.yml:/etc/prometheus/prometheus.yml:ro
+
+  ingester:
+    image: streamforge/ingester:${IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      args:
+        SERVICE: ingester
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment: &service_env
+      LOG_LEVEL: info
+      KAFKA_BROKERS: redpanda:9092
+      METRICS_ADDR: ":2112"
+      POSTGRES_DSN: postgres://streamforge:streamforge@timescaledb:5432/streamforge?sslmode=disable
+      PROMETHEUS_URL: http://prometheus:9090
+      TRACING_ENABLED: "true"
+      OTLP_ENDPOINT: jaeger:4317
+      TRACE_SAMPLE_RATIO: "1.0"
+
+  normalizer:
+    image: streamforge/normalizer:${IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      args:
+        SERVICE: normalizer
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment: *service_env
+
+  aggregator:
+    image: streamforge/aggregator:${IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      args:
+        SERVICE: aggregator
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    environment:
+      <<: *service_env
+      WINDOW_SIZE: 30s
+
+  api:
+    image: streamforge/api:${IMAGE_TAG:-dev}
+    build:
+      context: ../..
+      args:
+        SERVICE: api
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment: *service_env

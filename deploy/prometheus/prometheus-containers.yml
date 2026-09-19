@@ -1,0 +1,22 @@
+# Scrape config for the fully containerised compose mode (`make up-full`),
+# where the services run inside the compose network rather than on the host.
+#
+# The `service` label is set to the same values the host-run config
+# (prometheus.yml) and the Kubernetes pod-discovery relabeling use, so one
+# Grafana dashboard works unchanged across all three environments.
+
+global:
+  scrape_interval: 5s
+  scrape_timeout: 3s
+
+scrape_configs:
+  - job_name: streamforge
+    static_configs:
+      - targets: ["ingester:2112"]
+        labels: {service: ingester}
+      - targets: ["normalizer:2112"]
+        labels: {service: normalizer}
+      - targets: ["aggregator:2112"]
+        labels: {service: aggregator}
+      - targets: ["api:2112"]
+        labels: {service: api}

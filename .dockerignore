@@ -1,0 +1,15 @@
+# gen/ is deliberately NOT ignored: the generated protobuf code is committed
+# and the build needs it.
+.git
+.github
+bin/
+deploy/
+proto/
+*.md
+LICENSE
+.env
+.env.example
+.golangci.yml
+buf.yaml
+buf.gen.yaml
+buf.lock

@@ -12,10 +12,22 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	streamforgev1 "github.com/uzairha/streamforge/gen/streamforge/v1"
 )
+
+// Spans here cover the two logical database operations rather than individual
+// SQL statements, which is why this hand-rolls them instead of pulling in a
+// pgx instrumentation dependency for two call sites.
+func tracer() trace.Tracer {
+	return otel.Tracer("github.com/uzairha/streamforge/internal/store")
+}
 
 // maxQueryRows caps a single QueryAggregates call so a broad, unbounded
 // filter (e.g. no chain, metric, or time range at all) can't return an
@@ -70,6 +82,17 @@ func (s *Store) UpsertAggregates(ctx context.Context, aggs []*streamforgev1.Aggr
 	if len(aggs) == 0 {
 		return nil
 	}
+
+	ctx, span := tracer().Start(ctx, "store.upsert_aggregates",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			semconv.DBSystemNamePostgreSQL,
+			semconv.DBOperationName("INSERT"),
+			attribute.Int("streamforge.aggregate_count", len(aggs)),
+		),
+	)
+	defer span.End()
+
 	batch := &pgx.Batch{}
 	for _, a := range aggs {
 		labelsJSON, key := encodeLabels(a.GetLabels())
@@ -82,6 +105,8 @@ func (s *Store) UpsertAggregates(ctx context.Context, aggs []*streamforgev1.Aggr
 	defer func() { _ = br.Close() }()
 	for range aggs {
 		if _, err := br.Exec(); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "upsert failed")
 			return fmt.Errorf("store: upsert aggregate: %w", err)
 		}
 	}
@@ -112,11 +137,24 @@ LIMIT $5
 // QueryAggregates returns aggregates matching q, oldest window first, capped
 // at maxQueryRows.
 func (s *Store) QueryAggregates(ctx context.Context, q AggregateQuery) ([]*streamforgev1.Aggregate, error) {
+	ctx, span := tracer().Start(ctx, "store.query_aggregates",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			semconv.DBSystemNamePostgreSQL,
+			semconv.DBOperationName("SELECT"),
+			attribute.String("streamforge.filter_chain", q.Chain),
+			attribute.String("streamforge.filter_metric", q.Metric),
+		),
+	)
+	defer span.End()
+
 	since := nilIfZero(q.Since)
 	until := nilIfZero(q.Until)
 
 	rows, err := s.pool.Query(ctx, querySQL, q.Chain, q.Metric, since, until, maxQueryRows)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
 		return nil, fmt.Errorf("store: query aggregates: %w", err)
 	}
 	defer rows.Close()
@@ -149,8 +187,11 @@ func (s *Store) QueryAggregates(ctx context.Context, q AggregateQuery) ([]*strea
 		})
 	}
 	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
 		return nil, fmt.Errorf("store: query aggregates: %w", err)
 	}
+	span.SetAttributes(attribute.Int("streamforge.row_count", len(out)))
 	return out, nil
 }
 

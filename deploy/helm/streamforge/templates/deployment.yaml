@@ -1,0 +1,81 @@
+{{- $root := . -}}
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "streamforge.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "streamforge.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  replicas: {{ $svc.replicas }}
+  selector:
+    matchLabels:
+      {{- include "streamforge.selectorLabels" (dict "root" $root "component" $name) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "streamforge.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+      annotations:
+        # Prometheus discovers these pods by annotation rather than by a
+        # ServiceMonitor CRD, so the chart stays installable on a bare kind
+        # cluster with no operator present.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $root.Values.common.metricsPort | quote }}
+        prometheus.io/path: /metrics
+        # Roll the pods when the config or secret content changes; without this
+        # a `helm upgrade` that only edits env would leave the old pods running.
+        checksum/config: {{ include (print $root.Template.BasePath "/configmap-app.yaml") $root | sha256sum }}
+        checksum/secret: {{ include (print $root.Template.BasePath "/secret.yaml") $root | sha256sum }}
+    spec:
+      securityContext:
+        {{- include "streamforge.podSecurityContext" $root | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ $root.Values.image.registry }}/{{ $name }}:{{ $root.Values.image.tag }}"
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          securityContext:
+            {{- include "streamforge.containerSecurityContext" $root | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "streamforge.fullname" $root }}-config
+            - secretRef:
+                name: {{ include "streamforge.fullname" $root }}-secret
+          {{- with $svc.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: metrics
+              containerPort: {{ $root.Values.common.metricsPort }}
+            {{- if $svc.ports }}
+            {{- range $portName, $portNum := $svc.ports }}
+            - name: {{ $portName }}
+              containerPort: {{ $portNum }}
+            {{- end }}
+            {{- end }}
+          # Every service already serves /healthz on the metrics port, so the
+          # probes needed no new application code.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml $root.Values.resources | nindent 12 }}
+      # The services drain in-flight work on SIGTERM (flush producers, close
+      # the final windows), so give them at least their own shutdown budget.
+      terminationGracePeriodSeconds: 30
+{{- end }}

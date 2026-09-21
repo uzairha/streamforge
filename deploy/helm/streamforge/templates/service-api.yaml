@@ -1,0 +1,25 @@
+{{- $api := .Values.services.api -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-api
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: {{ $api.service.type }}
+  selector:
+    {{- include "streamforge.selectorLabels" (dict "root" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $api.ports.http }}
+      targetPort: http
+      {{- if eq $api.service.type "NodePort" }}
+      nodePort: {{ $api.service.nodePorts.http }}
+      {{- end }}
+    - name: grpc
+      port: {{ $api.ports.grpc }}
+      targetPort: grpc
+      {{- if eq $api.service.type "NodePort" }}
+      nodePort: {{ $api.service.nodePorts.grpc }}
+      {{- end }}

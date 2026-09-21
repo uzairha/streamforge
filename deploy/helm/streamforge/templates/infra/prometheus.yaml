@@ -1,0 +1,122 @@
+{{- if .Values.infra.enabled }}
+# Pod discovery needs API access. Without this ServiceAccount and role binding
+# Prometheus starts cleanly and simply discovers nothing, which looks like a
+# scrape-config bug rather than a permissions one.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "streamforge.fullname" . }}-prometheus
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "streamforge.fullname" . }}-prometheus
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+rules:
+  # Namespace-scoped: this Prometheus only ever scrapes the release's own pods,
+  # so it has no business reading the whole cluster.
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "streamforge.fullname" . }}-prometheus
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "streamforge.fullname" . }}-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "streamforge.fullname" . }}-prometheus
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "streamforge.fullname" . }}-prometheus-config
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+data:
+  prometheus.yml: |
+{{ include "streamforge.prometheusConfig" . | indent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-prometheus
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  type: NodePort
+  selector:
+    {{- include "streamforge.selectorLabels" (dict "root" . "component" "prometheus") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.infra.prometheus.port }}
+      targetPort: http
+      nodePort: {{ .Values.infra.prometheus.nodePort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "streamforge.fullname" . }}-prometheus
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "streamforge.selectorLabels" (dict "root" . "component" "prometheus") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "streamforge.labels" . | nindent 8 }}
+        app.kubernetes.io/component: prometheus
+      annotations:
+        checksum/config: {{ include "streamforge.prometheusConfig" . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "streamforge.fullname" . }}-prometheus
+      containers:
+        - name: prometheus
+          image: {{ .Values.infra.prometheus.image }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.retention.time={{ .Values.infra.prometheus.retention }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.infra.prometheus.port }}
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "streamforge.fullname" . }}-prometheus-config
+        - name: data
+          emptyDir: {}
+{{- end }}

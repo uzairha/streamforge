@@ -1,0 +1,64 @@
+{{- if .Values.infra.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-jaeger
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jaeger
+spec:
+  type: NodePort
+  selector:
+    {{- include "streamforge.selectorLabels" (dict "root" . "component" "jaeger") | nindent 4 }}
+  ports:
+    - name: otlp-grpc
+      port: {{ .Values.infra.jaeger.otlpPort }}
+      targetPort: otlp-grpc
+    - name: ui
+      port: {{ .Values.infra.jaeger.uiPort }}
+      targetPort: ui
+      nodePort: {{ .Values.infra.jaeger.nodePort }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "streamforge.fullname" . }}-jaeger
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: jaeger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "streamforge.selectorLabels" (dict "root" . "component" "jaeger") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "streamforge.labels" . | nindent 8 }}
+        app.kubernetes.io/component: jaeger
+    spec:
+      containers:
+        - name: jaeger
+          image: {{ .Values.infra.jaeger.image }}
+          env:
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+          ports:
+            - name: otlp-grpc
+              containerPort: {{ .Values.infra.jaeger.otlpPort }}
+            - name: ui
+              containerPort: {{ .Values.infra.jaeger.uiPort }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: ui
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # all-in-one keeps spans in memory only. That is the reason
+          # common.tracing.sampleRatio defaults well below 1 here: at full
+          # pipeline rate an unsampled trace stream would exhaust this pod.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+{{- end }}

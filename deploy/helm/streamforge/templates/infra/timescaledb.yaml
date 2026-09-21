@@ -1,0 +1,79 @@
+{{- if .Values.infra.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-timescaledb
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: timescaledb
+spec:
+  selector:
+    {{- include "streamforge.selectorLabels" (dict "root" . "component" "timescaledb") | nindent 4 }}
+  ports:
+    - name: postgres
+      port: {{ .Values.infra.timescaledb.port }}
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "streamforge.fullname" . }}-timescaledb
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: timescaledb
+spec:
+  serviceName: {{ include "streamforge.fullname" . }}-timescaledb
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "streamforge.selectorLabels" (dict "root" . "component" "timescaledb") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "streamforge.labels" . | nindent 8 }}
+        app.kubernetes.io/component: timescaledb
+    spec:
+      containers:
+        - name: timescaledb
+          image: {{ .Values.infra.timescaledb.image }}
+          # No schema migration Job: internal/store applies its embedded
+          # schema.sql on startup, so the aggregator and api create the
+          # hypertable themselves the first time they connect.
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "streamforge.fullname" . }}-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "streamforge.fullname" . }}-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "streamforge.fullname" . }}-secret
+                  key: POSTGRES_DB
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.infra.timescaledb.port }}
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          emptyDir: {}
+{{- end }}

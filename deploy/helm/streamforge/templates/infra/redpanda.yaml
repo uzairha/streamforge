@@ -1,0 +1,82 @@
+{{- if .Values.infra.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "streamforge.fullname" . }}-redpanda
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redpanda
+spec:
+  selector:
+    {{- include "streamforge.selectorLabels" (dict "root" . "component" "redpanda") | nindent 4 }}
+  ports:
+    - name: kafka
+      port: {{ .Values.infra.redpanda.port }}
+      targetPort: kafka
+    - name: admin
+      port: 9644
+      targetPort: admin
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "streamforge.fullname" . }}-redpanda
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redpanda
+spec:
+  serviceName: {{ include "streamforge.fullname" . }}-redpanda
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "streamforge.selectorLabels" (dict "root" . "component" "redpanda") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "streamforge.labels" . | nindent 8 }}
+        app.kubernetes.io/component: redpanda
+    spec:
+      containers:
+        - name: redpanda
+          image: {{ .Values.infra.redpanda.image }}
+          # dev-container mode plus --smp 1 --overprovisioned is what keeps a
+          # single-node Redpanda from trying to claim every core and lock huge
+          # pages — on a kind node inside a Docker VM it otherwise starves
+          # everything else in the cluster.
+          #
+          # args, not command: the image's ENTRYPOINT (/entrypoint.sh) is what
+          # understands --mode, and in Kubernetes `command` replaces the
+          # entrypoint rather than the arguments to it, which is why the same
+          # flags that work in docker-compose fail here as "unrecognised
+          # option" if they are passed as `command`.
+          args:
+            - redpanda
+            - start
+            - --smp=1
+            - --overprovisioned
+            - --node-id=0
+            - --mode=dev-container
+            - --kafka-addr=internal://0.0.0.0:{{ .Values.infra.redpanda.port }}
+            - --advertise-kafka-addr=internal://{{ include "streamforge.fullname" . }}-redpanda:{{ .Values.infra.redpanda.port }}
+          ports:
+            - name: kafka
+              containerPort: {{ .Values.infra.redpanda.port }}
+            - name: admin
+              containerPort: 9644
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "rpk cluster health | grep -qE 'Healthy:.*true'"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/redpanda/data
+      volumes:
+        - name: data
+          emptyDir: {}
+{{- end }}

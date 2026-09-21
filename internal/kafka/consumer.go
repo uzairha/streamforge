@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/proto"
 
 	streamforgev1 "github.com/uzairha/streamforge/gen/streamforge/v1"
@@ -111,9 +112,23 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 				handleErr = fmt.Errorf("kafka: unmarshal record at offset %d: %w", r.Offset, err)
 				return
 			}
-			if err := handle(ctx, &ev); err != nil {
+
+			// The handler receives a per-record context carrying the producer's
+			// trace, not the loop's context. Handlers that pass their context
+			// on to a downstream produce (as the normalizer and aggregator do)
+			// therefore extend the same trace with no changes of their own.
+			// Cancellation still propagates: this context derives from ctx.
+			rctx := extractTrace(ctx, r)
+			rctx, span := tracer().Start(rctx, c.topic+" process",
+				consumerSpanOpts(c.topic, eventAttrs(&ev)...)...)
+
+			err := handle(rctx, &ev)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "handler failed")
 				handleErr = err
 			}
+			span.End()
 		})
 		if handleErr != nil {
 			return handleErr

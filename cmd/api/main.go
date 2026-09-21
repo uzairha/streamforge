@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
@@ -39,6 +41,24 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTracing, terr := telemetry.InitTracing(ctx, telemetry.TracingConfig{
+		Enabled:     cfg.TracingEnabled,
+		Endpoint:    cfg.OTLPEndpoint,
+		ServiceName: "api",
+		SampleRatio: cfg.TraceSampleRatio,
+	})
+	if terr != nil {
+		log.Error("init tracing", "err", terr)
+		os.Exit(1)
+	}
+	defer func() {
+		traceCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if serr := shutdownTracing(traceCtx); serr != nil {
+			log.Error("shutdown tracing", "err", serr)
+		}
+	}()
 
 	metrics := telemetry.NewAPIMetrics()
 	go func() {
@@ -71,6 +91,10 @@ func main() {
 	srv := apiserver.NewServer(newTailer, db, prom, time.Now())
 
 	grpcServer := grpc.NewServer(
+		// A StatsHandler is a separate hook from the interceptor chain, so
+		// tracing composes with the existing auth and metrics interceptors
+		// rather than displacing them.
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(apiserver.UnaryAuthInterceptor(cfg.APIKey), apiserver.UnaryMetricsInterceptor(metrics)),
 		grpc.ChainStreamInterceptor(apiserver.StreamAuthInterceptor(cfg.APIKey), apiserver.StreamMetricsInterceptor(metrics)),
 	)
@@ -98,8 +122,16 @@ func main() {
 	// connection when this ctx is Done, so passing anything shorter-lived
 	// would sever the gateway from its backend the moment that timeout
 	// elapsed, well before the server actually shuts down.
+	//
+	// The client-side StatsHandler is not optional decoration: without it the
+	// trace context stops at the HTTP handler and the gRPC server below starts
+	// a fresh trace, so every REST call would show up in Jaeger as two
+	// unrelated traces instead of one.
 	if gwErr := streamforgev1.RegisterStreamForgeServiceHandlerFromEndpoint(
-		ctx, gwMux, cfg.GRPCAddr, []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		ctx, gwMux, cfg.GRPCAddr, []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithStatsHandler(otelgrpc.NewClientHandler()),
+		},
 	); gwErr != nil {
 		log.Error("register rest gateway", "err", gwErr)
 		os.Exit(1)
@@ -111,7 +143,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpMux,
+		Handler:           otelhttp.NewHandler(httpMux, "api"),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

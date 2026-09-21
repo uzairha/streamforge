@@ -33,6 +33,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	shutdownTracing, terr := telemetry.InitTracing(ctx, telemetry.TracingConfig{
+		Enabled:     cfg.TracingEnabled,
+		Endpoint:    cfg.OTLPEndpoint,
+		ServiceName: "normalizer",
+		SampleRatio: cfg.TraceSampleRatio,
+	})
+	if terr != nil {
+		log.Error("init tracing", "err", terr)
+		os.Exit(1)
+	}
+	defer func() {
+		traceCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if serr := shutdownTracing(traceCtx); serr != nil {
+			log.Error("shutdown tracing", "err", serr)
+		}
+	}()
+
 	metrics := telemetry.NewNormalizerMetrics()
 	go func() {
 		if serr := metrics.Serve(ctx, cfg.MetricsAddr); serr != nil {

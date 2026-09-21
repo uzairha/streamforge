@@ -16,6 +16,10 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	streamforgev1 "github.com/uzairha/streamforge/gen/streamforge/v1"
 	"github.com/uzairha/streamforge/internal/config"
 	"github.com/uzairha/streamforge/internal/kafka"
@@ -23,6 +27,8 @@ import (
 	"github.com/uzairha/streamforge/internal/telemetry"
 	"github.com/uzairha/streamforge/internal/window"
 )
+
+const tracerName = "github.com/uzairha/streamforge/cmd/aggregator"
 
 func main() {
 	cfg, err := config.Load("aggregator")
@@ -34,6 +40,27 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTracing, terr := telemetry.InitTracing(ctx, telemetry.TracingConfig{
+		Enabled:     cfg.TracingEnabled,
+		Endpoint:    cfg.OTLPEndpoint,
+		ServiceName: "aggregator",
+		SampleRatio: cfg.TraceSampleRatio,
+	})
+	if terr != nil {
+		log.Error("init tracing", "err", terr)
+		os.Exit(1)
+	}
+	// Runs last, on a fresh context: the final window flush below emits the
+	// most interesting spans of the run, and they are produced after ctx has
+	// already been cancelled by the shutdown signal.
+	defer func() {
+		flushTraceCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancel()
+		if serr := shutdownTracing(flushTraceCtx); serr != nil {
+			log.Error("shutdown tracing", "err", serr)
+		}
+	}()
 
 	metrics := telemetry.NewAggregatorMetrics()
 	go func() {
@@ -106,7 +133,7 @@ func main() {
 		if len(closed) == 0 {
 			return nil
 		}
-		n, cerr := commitWindows(hctx, db, producer, metrics, closed)
+		n, cerr := commitWindows(hctx, db, producer, metrics, closed, "watermark")
 		windowsClosed += n
 		return cerr
 	})
@@ -123,7 +150,10 @@ func main() {
 	// activity before every restart would simply vanish.
 	flushCtx, cancelFlush := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	if final := engine.Flush(); len(final) > 0 {
-		n, ferr := commitWindows(flushCtx, db, producer, metrics, final)
+		// No triggering event here, so this span links to nothing — the
+		// windows closed because the process is stopping, not because the
+		// watermark moved.
+		n, ferr := commitWindows(flushCtx, db, producer, metrics, final, "shutdown_flush")
 		windowsClosed += n
 		if ferr != nil {
 			log.Error("flush", "err", ferr)
@@ -141,24 +171,48 @@ func main() {
 // aggregate to the aggregates topic, in that order. It returns how many
 // aggregates it fully committed before any error, so a partial failure still
 // counts what succeeded.
+//
+// Tracing note: a closed window folds in events from many different traces, and
+// a span cannot have many parents. Holding every contributing SpanContext for
+// the lifetime of an open window would also grow without bound. So this starts
+// a NEW ROOT span linked to the event that triggered the close — the one whose
+// arrival advanced the watermark past the window's end. That reads honestly in
+// Jaeger as "this window closed because that event arrived", and costs nothing
+// because the triggering event's context is already in hand.
 func commitWindows(
 	ctx context.Context,
 	db *store.Store,
 	producer *kafka.AggregateProducer,
 	metrics *telemetry.AggregatorMetrics,
 	closed []*streamforgev1.Aggregate,
+	trigger string,
 ) (int64, error) {
+	spanCtx, span := telemetry.Tracer(tracerName).Start(ctx, "window.commit",
+		trace.WithNewRoot(),
+		trace.WithLinks(trace.LinkFromContext(ctx)),
+		trace.WithAttributes(
+			attribute.Int("streamforge.windows_closed", len(closed)),
+			attribute.String("streamforge.close_trigger", trigger),
+		),
+	)
+	defer span.End()
+	ctx = spanCtx
+
 	start := time.Now()
 	err := db.UpsertAggregates(ctx, closed)
 	metrics.StoreSeconds.Observe(time.Since(start).Seconds())
 	if err != nil {
 		metrics.StoreErrors.Inc()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "upsert failed")
 		return 0, fmt.Errorf("upsert aggregates: %w", err)
 	}
 
 	var n int64
 	for _, agg := range closed {
 		if perr := producer.ProduceSync(ctx, agg); perr != nil {
+			span.RecordError(perr)
+			span.SetStatus(codes.Error, "produce failed")
 			return n, fmt.Errorf("produce aggregate (chain=%s metric=%s): %w", agg.GetChain(), agg.GetMetric(), perr)
 		}
 		metrics.WindowsClosed.WithLabelValues(agg.GetMetric()).Inc()

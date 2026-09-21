@@ -55,6 +55,10 @@ type Config struct {
 	MetricsAddr    string
 	OTLPEndpoint   string
 	TracingEnabled bool
+	// TraceSampleRatio is the fraction of traces sampled at the root. It is
+	// applied under a parent-based sampler, so a service only makes this
+	// decision for traces it starts; downstream services inherit it.
+	TraceSampleRatio float64
 }
 
 // Load reads configuration for the named service.
@@ -95,6 +99,9 @@ func Load(service string) (Config, error) {
 	if c.TracingEnabled, err = envBool("TRACING_ENABLED", false); err != nil {
 		return Config{}, err
 	}
+	if c.TraceSampleRatio, err = envFloat("TRACE_SAMPLE_RATIO", 1); err != nil {
+		return Config{}, err
+	}
 	if c.EthMaxBackoff, err = envDuration("ETH_MAX_BACKOFF", 30*time.Second); err != nil {
 		return Config{}, err
 	}
@@ -129,6 +136,9 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be > 0, got %v", c.ShutdownTimeout)
+	}
+	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
+		return fmt.Errorf("TRACE_SAMPLE_RATIO must be between 0 and 1, got %v", c.TraceSampleRatio)
 	}
 	if c.Source == "ethereum" {
 		if !strings.HasPrefix(c.EthWSURL, "ws://") && !strings.HasPrefix(c.EthWSURL, "wss://") {

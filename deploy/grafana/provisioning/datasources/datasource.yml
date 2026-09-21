@@ -3,6 +3,9 @@ apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
+    # Pinned so provisioned dashboards can reference the datasource by uid and
+    # resolve identically in compose and in Kubernetes, where the URL differs.
+    uid: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true

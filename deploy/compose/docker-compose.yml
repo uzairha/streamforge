@@ -68,7 +68,10 @@ services:
       GF_USERS_DEFAULT_THEME: light
     volumes:
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
-      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # The dashboards live in the Helm chart because Helm can only embed files
+      # from inside its own directory, and duplicating them would let the two
+      # environments drift. Compose reads that same single copy.
+      - ../helm/streamforge/dashboards:/var/lib/grafana/dashboards:ro
 
   jaeger:
     image: jaegertracing/all-in-one:1.65.0

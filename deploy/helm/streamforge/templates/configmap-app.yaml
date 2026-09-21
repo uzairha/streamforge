@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "streamforge.fullname" . }}-config
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.common.logLevel | quote }}
+  SHUTDOWN_TIMEOUT: {{ .Values.common.shutdownTimeout | quote }}
+  KAFKA_BROKERS: {{ include "streamforge.kafkaBrokers" . | quote }}
+  TOPIC_RAW: {{ .Values.common.topics.raw | quote }}
+  TOPIC_NORMALIZED: {{ .Values.common.topics.normalized | quote }}
+  TOPIC_AGGREGATES: {{ .Values.common.topics.aggregates | quote }}
+  METRICS_ADDR: {{ printf ":%d" (int .Values.common.metricsPort) | quote }}
+  PROMETHEUS_URL: {{ include "streamforge.prometheusURL" . | quote }}
+  TRACING_ENABLED: {{ .Values.common.tracing.enabled | quote }}
+  OTLP_ENDPOINT: {{ include "streamforge.otlpEndpoint" . | quote }}
+  TRACE_SAMPLE_RATIO: {{ .Values.common.tracing.sampleRatio | quote }}

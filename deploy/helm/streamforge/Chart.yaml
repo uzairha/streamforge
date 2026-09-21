@@ -1,0 +1,14 @@
+apiVersion: v2
+name: streamforge
+description: Real-time blockchain event pipeline — ingest, normalize, aggregate, serve
+type: application
+version: 0.5.0
+appVersion: "0.5.0"
+keywords:
+  - kafka
+  - stream-processing
+  - blockchain
+  - opentelemetry
+home: https://github.com/uzairha/streamforge
+sources:
+  - https://github.com/uzairha/streamforge

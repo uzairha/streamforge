@@ -1,0 +1,135 @@
+# Default values for the streamforge chart.
+#
+# The four pipeline services are rendered from the `services` map by a single
+# deployment template: they differ only in name, replica count, extra
+# environment, and whether they publish ports, so four near-identical templates
+# would be four places to fix the same thing.
+
+image:
+  registry: streamforge
+  tag: dev
+  # Images are side-loaded into kind with `kind load docker-image`, so pulling
+  # is never correct here — IfNotPresent keeps the kubelet from trying to
+  # reach a registry that does not have them.
+  pullPolicy: IfNotPresent
+
+# Settings every service reads. Rendered into one ConfigMap and mounted as env.
+common:
+  logLevel: info
+  shutdownTimeout: 10s
+  # Each pod has its own IP, so all four services can share one metrics port;
+  # the 2112-2115 split in docker-compose only exists because the host-run mode
+  # shares a single network namespace.
+  metricsPort: 2112
+  topics:
+    raw: raw-events
+    normalized: normalized-events
+    aggregates: aggregates
+    # Partition count is the knob M6's throughput tuning turns. It also caps how
+    # many normalizer replicas can do useful work.
+    partitions: 6
+    replicationFactor: 1
+  tracing:
+    enabled: true
+    sampleRatio: 0.1
+
+# Credentials. Rendered into a Secret rather than the ConfigMap.
+secrets:
+  # Empty disables API authentication entirely — acceptable only for a local
+  # demo, and the api service logs a warning when it happens.
+  apiKey: ""
+  postgresUser: streamforge
+  postgresPassword: streamforge
+  postgresDatabase: streamforge
+
+services:
+  ingester:
+    # Deliberately 1. Two ingesters against the same source emit the same
+    # events twice — the dedup window is per-process, not shared — so scaling
+    # this out needs source-level partitioning first.
+    replicas: 1
+    env:
+      SOURCE: synthetic
+      SYNTHETIC_RATE: "25"
+      SYNTHETIC_CHAINS: synthetic
+
+  normalizer:
+    # Stateless consumer-group member: this is the service that genuinely
+    # scales horizontally, bounded by the topic's partition count.
+    replicas: 2
+    env: {}
+
+  aggregator:
+    # Deliberately 1, and this is a correctness constraint rather than a
+    # preference. Window state lives in memory per process. A second replica
+    # would hold partial windows for its own partitions, and both replicas
+    # would upsert the same (chain, metric, window_start, labels_key) row —
+    # last writer wins, producing silently wrong aggregates. Scaling this
+    # safely requires window keys aligned to partitions, but records are
+    # partitioned by sender address, not by chain.
+    replicas: 1
+    env:
+      WINDOW_SIZE: 1m
+      ALLOWED_LATENESS: 30s
+
+  api:
+    # Stateless: the live tail is groupless by design, so each replica gets its
+    # own full copy of the stream rather than splitting partitions.
+    replicas: 1
+    env: {}
+    ports:
+      grpc: 9090
+      http: 8080
+    service:
+      type: NodePort
+      # Matched by kind's extraPortMappings so the dashboard is reachable on
+      # localhost:8080 without a port-forward.
+      nodePorts:
+        http: 30080
+        grpc: 30090
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  # No limits by default: the whole stack on one kind node is already tight,
+  # and CPU limits would throttle the pipeline before it hit a real ceiling.
+  limits: {}
+
+# Used only when infra.enabled is false: the addresses of an existing
+# Kafka/Postgres/observability stack. kafkaBrokers and postgresDSN are required
+# in that mode; the two observability endpoints may be left empty, which
+# disables trace export and the API's throughput numbers respectively.
+external:
+  kafkaBrokers: ""
+  postgresDSN: ""
+  otlpEndpoint: ""
+  prometheusURL: ""
+
+# Single-replica development instances of everything the pipeline depends on.
+# Set to false to point the services at an existing Kafka/Postgres/observability
+# stack instead — the production-shaped seam.
+infra:
+  enabled: true
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    port: 9092
+  timescaledb:
+    image: timescale/timescaledb:2.17.2-pg16
+    port: 5432
+    storage: 2Gi
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    port: 9090
+    nodePort: 30909
+    retention: 6h
+  grafana:
+    image: grafana/grafana:11.4.0
+    port: 3000
+    nodePort: 30300
+    adminPassword: streamforge
+  jaeger:
+    image: jaegertracing/all-in-one:1.65.0
+    otlpPort: 4317
+    uiPort: 16686
+    nodePort: 30686

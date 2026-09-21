@@ -1,0 +1,47 @@
+# Overrides for the local kind cluster (`make kind-up && make kind-load && make deploy`).
+#
+# Everything here trades durability and headroom for fitting the whole stack —
+# Redpanda, TimescaleDB, Prometheus, Grafana, Jaeger and five app pods — onto a
+# single kind node inside Docker Desktop's VM. Allow that VM at least 6GB.
+
+image:
+  tag: dev
+  pullPolicy: IfNotPresent
+
+common:
+  logLevel: info
+  topics:
+    # Three is enough to show the normalizer's two replicas splitting
+    # partitions without spreading a laptop-scale workload too thin.
+    partitions: 3
+  tracing:
+    enabled: true
+    # Jaeger all-in-one holds spans in memory; full sampling at pipeline rate
+    # would exhaust it within minutes.
+    sampleRatio: 0.25
+
+secrets:
+  # Demo key: the dashboard prompts for it, and the api rejects requests
+  # without it, which is the behaviour worth showing.
+  apiKey: streamforge-demo-key
+
+services:
+  ingester:
+    env:
+      SOURCE: synthetic
+      # Deliberately modest so the whole pipeline stays visible in Grafana
+      # rather than saturating a laptop.
+      SYNTHETIC_RATE: "20"
+      SYNTHETIC_CHAINS: synthetic
+  aggregator:
+    env:
+      # Short windows so a demo produces closed windows within seconds instead
+      # of waiting a full minute for the first row to appear.
+      WINDOW_SIZE: 30s
+      ALLOWED_LATENESS: 10s
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits: {}

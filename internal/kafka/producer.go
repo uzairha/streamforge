@@ -10,10 +10,21 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/proto"
 
 	streamforgev1 "github.com/uzairha/streamforge/gen/streamforge/v1"
 )
+
+// eventAttrs describes a ChainEvent on a span. Chain and type are bounded
+// label sets; the event id is not, so it stays off the attribute list.
+func eventAttrs(ev *streamforgev1.ChainEvent) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("streamforge.chain", ev.GetChain()),
+		attribute.String("streamforge.event_type", ev.GetType().String()),
+	}
+}
 
 // OnResult is called once per record with the destination topic and the produce
 // outcome (nil on success). It runs on a franz-go internal goroutine, so it must
@@ -61,6 +72,11 @@ func (p *Producer) Ping(ctx context.Context) error {
 
 // Produce enqueues ev for asynchronous delivery. It returns an error only for
 // local failures (marshalling); delivery outcomes arrive via OnResult.
+//
+// The span ends in the delivery callback rather than on return, so it measures
+// time to broker acknowledgement instead of time to buffer the record. The
+// ingester calls this with a background context (records must outlive the
+// shutdown signal), which makes this span the root of the pipeline's trace.
 func (p *Producer) Produce(ctx context.Context, ev *streamforgev1.ChainEvent) error {
 	value, err := proto.Marshal(ev)
 	if err != nil {
@@ -71,9 +87,19 @@ func (p *Producer) Produce(ctx context.Context, ev *streamforgev1.ChainEvent) er
 		Key:   []byte(partitionKey(ev)),
 		Value: value,
 	}
+
+	ctx, span := tracer().Start(ctx, p.topic+" publish",
+		producerSpanOpts(p.topic, eventAttrs(ev)...)...)
+	injectTrace(ctx, rec)
+
 	p.inFlight.Add(1)
 	p.client.Produce(ctx, rec, func(_ *kgo.Record, err error) {
 		p.inFlight.Add(-1)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "produce failed")
+		}
+		span.End()
 		p.onResult(p.topic, err)
 	})
 	return nil
@@ -94,6 +120,12 @@ func (p *Producer) ProduceSync(ctx context.Context, ev *streamforgev1.ChainEvent
 		Key:   []byte(partitionKey(ev)),
 		Value: value,
 	}
+
+	ctx, span := tracer().Start(ctx, p.topic+" publish",
+		producerSpanOpts(p.topic, eventAttrs(ev)...)...)
+	defer span.End()
+	injectTrace(ctx, rec)
+
 	p.inFlight.Add(1)
 	done := make(chan error, 1)
 	p.client.Produce(ctx, rec, func(_ *kgo.Record, err error) {
@@ -103,8 +135,14 @@ func (p *Producer) ProduceSync(ctx context.Context, ev *streamforgev1.ChainEvent
 	})
 	select {
 	case err := <-done:
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "produce failed")
+		}
 		return err
 	case <-ctx.Done():
+		span.RecordError(ctx.Err())
+		span.SetStatus(codes.Error, "context cancelled")
 		return ctx.Err()
 	}
 }

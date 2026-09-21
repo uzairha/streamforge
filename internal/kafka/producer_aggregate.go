@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"google.golang.org/protobuf/proto"
 
 	streamforgev1 "github.com/uzairha/streamforge/gen/streamforge/v1"
@@ -73,6 +75,14 @@ func (p *AggregateProducer) ProduceSync(ctx context.Context, agg *streamforgev1.
 		Key:   []byte(agg.GetChain()),
 		Value: value,
 	}
+
+	ctx, span := tracer().Start(ctx, p.topic+" publish", producerSpanOpts(p.topic,
+		attribute.String("streamforge.chain", agg.GetChain()),
+		attribute.String("streamforge.metric", agg.GetMetric()),
+	)...)
+	defer span.End()
+	injectTrace(ctx, rec)
+
 	p.inFlight.Add(1)
 	done := make(chan error, 1)
 	p.client.Produce(ctx, rec, func(_ *kgo.Record, err error) {
@@ -82,8 +92,14 @@ func (p *AggregateProducer) ProduceSync(ctx context.Context, agg *streamforgev1.
 	})
 	select {
 	case err := <-done:
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "produce failed")
+		}
 		return err
 	case <-ctx.Done():
+		span.RecordError(ctx.Err())
+		span.SetStatus(codes.Error, "context cancelled")
 		return ctx.Err()
 	}
 }

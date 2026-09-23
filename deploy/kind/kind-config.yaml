@@ -1,0 +1,35 @@
+# Single-node kind cluster for the StreamForge demo.
+#
+# The port mappings pair with the NodePort services in the Helm chart, so every
+# UI is reachable on localhost straight after `make deploy` — no `kubectl
+# port-forward` process to keep alive in another terminal.
+#
+# NodePort's default range is 30000-32767, which is why the in-cluster ports
+# below are 3xxxx rather than matching the host ports directly.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: streamforge
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # api: REST gateway + embedded dashboard -> http://localhost:8080
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP
+      # api: native gRPC, for grpcurl
+      - containerPort: 30090
+        hostPort: 9090
+        protocol: TCP
+      # Grafana -> http://localhost:3000
+      - containerPort: 30300
+        hostPort: 3000
+        protocol: TCP
+      # Prometheus -> http://localhost:9091 (9090 is taken by the gRPC port
+      # above, matching the compose stack's mapping)
+      - containerPort: 30909
+        hostPort: 9091
+        protocol: TCP
+      # Jaeger UI -> http://localhost:16686
+      - containerPort: 30686
+        hostPort: 16686
+        protocol: TCP

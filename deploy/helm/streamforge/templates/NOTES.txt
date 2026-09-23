@@ -1,0 +1,37 @@
+StreamForge {{ .Chart.AppVersion }} is installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Watch it come up:
+
+  kubectl get pods -n {{ .Release.Namespace }} -w
+
+{{ if .Values.infra.enabled -}}
+On a kind cluster created from deploy/kind/kind-config.yaml, these are already
+mapped to localhost:
+
+  Dashboard / REST   http://localhost:8080
+  Grafana            http://localhost:3000       (anonymous admin)
+  Prometheus         http://localhost:9091
+  Jaeger             http://localhost:16686
+
+Anywhere else, forward the ports yourself:
+
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "streamforge.fullname" . }}-api 8080:{{ .Values.services.api.ports.http }}
+{{- end }}
+
+{{ if .Values.secrets.apiKey -}}
+Every RPC needs the API key:
+
+  curl -H "X-Api-Key: {{ .Values.secrets.apiKey }}" http://localhost:8080/v1/stats
+{{- else -}}
+WARNING: secrets.apiKey is empty, so the API accepts unauthenticated requests.
+Set it before exposing this outside a local cluster.
+{{- end }}
+
+{{ if .Values.common.tracing.enabled -}}
+Tracing is on at {{ .Values.common.tracing.sampleRatio }} sampling. In Jaeger, pick the
+"ingester" service and look for a `{{ .Values.common.topics.raw }} publish` trace: it should
+continue into the normalizer and on to the aggregator's store write. Window
+commits appear as separate `window.commit` roots, linked to the event whose
+arrival closed the window rather than parented to it — an aggregate has many
+contributing traces and a span can only have one parent.
+{{- end }}

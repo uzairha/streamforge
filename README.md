@@ -7,14 +7,14 @@ REST/JSON gateway. The whole stack runs locally on Docker Compose and deploys to
 Kubernetes via a Helm chart, with Prometheus/Grafana metrics and OpenTelemetry
 tracing.
 
-> Status: **M2 — live Ethereum source.** `SOURCE=ethereum` subscribes to
-> `newHeads` over the keyless public endpoint and, when `ETH_FETCH_BODIES=true`
-> (the default), fetches each block's body to emit one event per transaction
-> too. Connection drops reconnect with exponential backoff and full jitter
-> (`ETH_MAX_BACKOFF`), resetting once a connection has stayed up 60s; a bounded
-> dedup window (`ETH_DEDUP_WINDOW`) suppresses events replayed by a resubscribe
-> or an endpoint hiccup. The normalizer/aggregator real implementations, the
-> gRPC server, and the Helm deploy land in M3–M6 (see [Roadmap](#roadmap)).
+> Status: **M5 — containers, Kubernetes and distributed tracing.** All four
+> services ship as distroless images and deploy to a local `kind` cluster with
+> one `helm install`, alongside single-replica Redpanda, TimescaleDB,
+> Prometheus, Grafana and Jaeger. Traces follow an event end to end — the trace
+> context rides in Kafka record headers, so one Jaeger trace spans ingester,
+> normalizer and aggregator across three processes and two topics. A provisioned
+> Grafana dashboard covers every pipeline stage. Load testing and lag tuning are
+> M6 (see [Roadmap](#roadmap)).
 
 ## Architecture
 
@@ -62,6 +62,9 @@ golangci-lint · GitHub Actions
 - Docker + Docker Compose
 - `buf` (`brew install buf`)
 - `golangci-lint` (`brew install golangci-lint`)
+- For the Kubernetes path: `kind` and `helm` (`brew install kind helm`).
+  Give Docker's VM at least 6GB — the cluster runs Redpanda, TimescaleDB,
+  Prometheus, Grafana, Jaeger and five application pods on one node.
 
 ## Quickstart
 
@@ -97,6 +100,107 @@ Local endpoints once `make up` is running:
 | Grafana           | http://localhost:3000 (anonymous admin) |
 | Jaeger UI         | http://localhost:16686 |
 
+### Running the services as containers
+
+`make up` starts only the infrastructure, leaving the services to run on the
+host for a fast edit-run loop. To run everything in containers instead:
+
+```bash
+make images      # build all four distroless images
+make up-full     # infra + the four services, wired by service name
+make down-full
+```
+
+## Run on Kubernetes (kind)
+
+```bash
+make kind-up     # create the cluster (maps 8080/3000/9091/16686 to localhost)
+make kind-load   # build the images and side-load them — no registry involved
+make deploy      # helm upgrade --install with values-kind.yaml
+make k8s-status
+```
+
+Then: dashboard at http://localhost:8080 (API key `streamforge-demo-key`),
+Grafana at http://localhost:3000, Prometheus at http://localhost:9091, Jaeger at
+http://localhost:16686. `make undeploy` removes the release; `make kind-down`
+deletes the cluster.
+
+The chart deploys its own single-replica Redpanda, TimescaleDB, Prometheus,
+Grafana and Jaeger. Set `infra.enabled=false` and supply
+`external.kafkaBrokers` / `external.postgresDSN` to run the four services
+against an existing stack instead.
+
+### Topic partitions on a fresh install
+
+A post-install hook provisions the three topics at `common.topics.partitions`.
+The services start before that hook runs and auto-create their topics with a
+single partition, so the job grows existing topics to the target count rather
+than only creating them.
+
+Partition counts in `rpk` are therefore correct immediately, but the running
+producers and consumers keep using the old count until their cached topic
+metadata expires (franz-go refreshes roughly every five minutes, then the
+consumer group rebalances onto the new partitions). It resolves on its own;
+`kubectl rollout restart deployment -n streamforge streamforge-ingester
+streamforge-normalizer` forces it at once. Kafka partition counts only grow, so
+lowering the value will not shrink an existing topic.
+
+Prometheus finds the pods by `prometheus.io/scrape` annotation and
+`kubernetes_sd_configs`, so no Prometheus Operator or `ServiceMonitor` CRD is
+required. It relabels the component name onto a `service` label — the same
+label the Compose scrape configs set statically — which is what lets one
+dashboard JSON work unchanged in all three environments.
+
+### Replica counts
+
+`values.yaml` sets these deliberately, and two of them are constraints rather
+than defaults:
+
+| Service | Replicas | Why |
+|---------|----------|-----|
+| ingester | 1 | Two ingesters on one source emit every event twice: the dedup window is per-process. Scaling out needs source-level partitioning. |
+| normalizer | 2 | Stateless consumer-group member — the one service that scales horizontally, bounded by topic partition count. |
+| aggregator | 1 | **Correctness constraint.** Window state is in-memory per process. A second replica would hold partial windows for its own partitions and both would upsert the same `(chain, metric, window_start, labels_key)` row — last writer wins, silently wrong aggregates. Safe scaling needs window keys aligned to partitions, but records are partitioned by sender address, not chain. |
+| api | 1+ | Stateless; the live tail is groupless, so each replica gets its own full copy of the stream. |
+
+## Observability
+
+### Dashboards
+
+`deploy/helm/streamforge/dashboards/streamforge-pipeline.json` is provisioned
+automatically by both Compose and the Helm chart. It covers each stage —
+ingest rates by chain and type, the normalizer's consumed-vs-produced funnel,
+invalid events by reason, window closures, late-event drops, TimescaleDB upsert
+quantiles, and API request/auth counters.
+
+The dashboards live inside the chart because Helm can only embed files from
+within its own directory; Compose mounts that same copy rather than keeping a
+second one that could drift.
+
+### Tracing
+
+Off by default. Turn it on with `TRACING_ENABLED=true` (already set in the
+container and Kubernetes paths) and open Jaeger.
+
+One trace follows an event across three processes and two Kafka topics. Kafka
+has no ambient trace context, so the producer injects W3C `traceparent` into the
+record headers and the consumer extracts it — `internal/kafka/otel.go`. Because
+the normalizer and aggregator already pass their handler context into the
+downstream produce call, propagation needed no changes in either service.
+
+Two details worth knowing when reading a trace:
+
+- **Window commits are separate roots.** A closed window folds in events from
+  many different traces, and a span can have only one parent. `window.commit`
+  is therefore a new root span with a *link* to the event whose arrival
+  advanced the watermark past the window's end, rather than a child of it.
+  Retaining every contributing span context for the lifetime of an open window
+  would also grow without bound.
+- **Sampling is parent-based.** `TRACE_SAMPLE_RATIO` only applies where a trace
+  starts; downstream services inherit that decision, so traces are never
+  half-recorded. Jaeger all-in-one keeps spans in memory, so lower the ratio
+  well below 1 before any load test.
+
 ## Configuration
 
 All services are configured through environment variables; see
@@ -109,13 +213,20 @@ fails fast on malformed or out-of-range values.
 cmd/<service>/      service entrypoints
 internal/config/    env-driven configuration + validation
 internal/source/    event source interface + synthetic generator
-internal/kafka/     franz-go producer wrapper (protobuf values, acks=all)
-internal/telemetry/ structured logging + Prometheus metrics / health server
+internal/kafka/     franz-go producer/consumer wrappers + trace-context headers
+internal/normalize/ validation + enrichment
+internal/window/    event-time tumbling windows with watermarks
+internal/store/     TimescaleDB hypertable reads/writes
+internal/apiserver/ gRPC service, auth, Prometheus client, demo dashboard
+internal/telemetry/ logging, Prometheus metrics/health server, OTel tracing
 proto/              protobuf contracts (buf)
 gen/                generated Go (committed; CI checks it is current)
-deploy/compose/     local infra stack
-deploy/prometheus/  scrape config
+Dockerfile          one parameterised build for all four services
+deploy/compose/     local infra stack (+ overlay to containerise the services)
+deploy/prometheus/  scrape configs (host-run and containerised)
 deploy/grafana/     datasource + dashboard provisioning
+deploy/helm/        Helm chart, values, and the canonical dashboards
+deploy/kind/        kind cluster config with host port mappings
 ```
 
 ## Roadmap
@@ -125,7 +236,7 @@ deploy/grafana/     datasource + dashboard provisioning
 | **M0** | Scaffold, protobuf contracts, config/telemetry, synthetic source, CI |
 | **M1** | Ingester → Kafka producer, Prometheus metrics, health endpoint, integration tests (testcontainers) |
 | **M2** | Live Ethereum WebSocket source: reconnect/backoff, dedup |
-| M3 | Normalizer + aggregator: consumer groups, tumbling windows, TimescaleDB, checkpointing |
-| M4 | gRPC API (server-streaming) + grpc-gateway REST + demo dashboard + API-key auth |
-| M5 | Dockerfiles, Helm chart, `kind` cluster, Grafana dashboards, OpenTelemetry + Jaeger |
+| **M3** | Normalizer + aggregator: consumer groups, tumbling windows, TimescaleDB, checkpointing |
+| **M4** | gRPC API (server-streaming) + grpc-gateway REST + demo dashboard + API-key auth |
+| **M5** | Dockerfiles, Helm chart, `kind` cluster, Grafana dashboards, OpenTelemetry + Jaeger |
 | M6 | k6 load test, tuning (partitions / batching / parallelism), end-to-end lag write-up |

@@ -42,3 +42,94 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.13.2
+
+  images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [ingester, normalizer, aggregator, api]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ${{ matrix.service }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          build-args: SERVICE=${{ matrix.service }}
+          # Build only — nothing is published. Images reach a cluster through
+          # `kind load docker-image`, not a registry.
+          push: false
+          tags: streamforge/${{ matrix.service }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint chart
+        run: helm lint deploy/helm/streamforge
+      - name: Install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+      # helm lint accepts manifests with invalid apiVersions or misspelled
+      # fields; kubeconform checks them against the real Kubernetes schemas.
+      - name: Validate rendered manifests
+        run: |
+          helm template streamforge deploy/helm/streamforge \
+            --values deploy/helm/streamforge/values-kind.yaml \
+            | kubeconform -strict -summary -ignore-missing-schemas
+      - name: Validate the bring-your-own-infra path
+        run: |
+          helm template streamforge deploy/helm/streamforge \
+            --set infra.enabled=false \
+            --set external.kafkaBrokers=kafka:9092 \
+            --set external.postgresDSN=postgres://user:pass@db:5432/streamforge \
+            | kubeconform -strict -summary -ignore-missing-schemas
+
+  # A real cluster install, gated to pushes on main: it takes several minutes
+  # and not every pull request needs to pay for it.
+  k8s-e2e:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [images, chart]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: streamforge
+          config: deploy/kind/kind-config.yaml
+      - name: Build and load images
+        run: |
+          for s in ingester normalizer aggregator api; do
+            docker build --build-arg SERVICE=$s -t streamforge/$s:dev .
+            kind load docker-image streamforge/$s:dev --name streamforge
+          done
+      - name: Install the chart
+        run: |
+          helm upgrade --install streamforge deploy/helm/streamforge \
+            --namespace streamforge --create-namespace \
+            --values deploy/helm/streamforge/values-kind.yaml \
+            --wait --timeout 8m
+      - name: Assert the pipeline is actually moving events
+        run: |
+          set -eu
+          # The API sources these counters from Prometheus, so a non-zero
+          # ingested count proves scraping, the pipeline and the API at once.
+          for i in $(seq 1 30); do
+            body=$(curl -sf -H "X-Api-Key: streamforge-demo-key" \
+              http://localhost:8080/v1/stats || true)
+            echo "attempt $i: $body"
+            if echo "$body" | grep -qE '"eventsIngested":"?[1-9]'; then
+              echo "pipeline is live"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "pipeline never reported ingested events" >&2
+          kubectl get pods -n streamforge
+          kubectl logs -n streamforge -l app.kubernetes.io/component=ingester --tail=50 || true
+          exit 1

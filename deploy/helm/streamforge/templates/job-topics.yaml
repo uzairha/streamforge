@@ -1,0 +1,70 @@
+{{- if .Values.infra.enabled }}
+# Explicit topic provisioning, which the compose stack has so far left to
+# Redpanda's dev-container auto-create. Auto-created topics land on defaults,
+# which means no control over partition count — and partition count is both the
+# ceiling on normalizer parallelism and the main knob M6's tuning work turns.
+#
+# This runs as a post-install hook, which means the services are already up and
+# have very likely auto-created these topics with a single partition before it
+# fires. Creating is therefore not enough: the job converges an existing topic
+# onto the target partition count as well. Partition counts can only grow in
+# Kafka, so this is one-directional by design — lowering `partitions` in values
+# will not shrink a topic that already exists.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "streamforge.fullname" . }}-create-topics
+  labels:
+    {{- include "streamforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: create-topics
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        {{- include "streamforge.labels" . | nindent 8 }}
+        app.kubernetes.io/component: create-topics
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rpk
+          image: {{ .Values.infra.redpanda.image }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              BROKER="{{ include "streamforge.kafkaBrokers" . }}"
+              # The broker Service may resolve before Redpanda is actually
+              # accepting connections; retry rather than fail the release.
+              for i in $(seq 1 30); do
+                if rpk cluster info --brokers "$BROKER" >/dev/null 2>&1; then
+                  break
+                fi
+                echo "waiting for $BROKER ($i/30)"
+                sleep 2
+              done
+              TARGET={{ .Values.common.topics.partitions }}
+              for topic in {{ .Values.common.topics.raw }} {{ .Values.common.topics.normalized }} {{ .Values.common.topics.aggregates }}; do
+                # Already-exists is the normal case here, not a failure: the
+                # services auto-create their topics as soon as they start.
+                rpk topic create "$topic" \
+                  --brokers "$BROKER" \
+                  -p "$TARGET" \
+                  -r {{ .Values.common.topics.replicationFactor }} 2>/dev/null || true
+
+                current=$(rpk topic list --brokers "$BROKER" \
+                  | awk -v t="$topic" '$1 == t { print $2 }')
+                if [ -n "$current" ] && [ "$current" -lt "$TARGET" ]; then
+                  echo "$topic: growing $current -> $TARGET partitions"
+                  rpk topic add-partitions "$topic" \
+                    --brokers "$BROKER" \
+                    --num "$((TARGET - current))"
+                fi
+              done
+              rpk topic list --brokers "$BROKER"
+{{- end }}

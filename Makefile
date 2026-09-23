@@ -4,6 +4,14 @@ export PATH := $(GOBIN):$(PATH)
 
 SERVICES := ingester normalizer aggregator api
 COMPOSE  := docker compose -f deploy/compose/docker-compose.yml
+COMPOSE_FULL := $(COMPOSE) -f deploy/compose/docker-compose.services.yml
+
+IMAGE_REGISTRY ?= streamforge
+IMAGE_TAG      ?= dev
+KIND_CLUSTER   ?= streamforge
+HELM_RELEASE   ?= streamforge
+HELM_NAMESPACE ?= streamforge
+CHART          := deploy/helm/streamforge
 
 PROTOC_GEN_GO_VERSION         := v1.36.12
 PROTOC_GEN_GO_GRPC_VERSION    := v1.5.1
@@ -61,6 +69,56 @@ down: ## Stop local infra
 .PHONY: ps
 ps: ## Show local infra status
 	$(COMPOSE) ps
+
+.PHONY: up-full
+up-full: ## Start infra AND the four services as containers
+	$(COMPOSE_FULL) up -d
+
+.PHONY: down-full
+down-full: ## Stop the full containerised stack
+	$(COMPOSE_FULL) down
+
+.PHONY: images
+images: $(addprefix image-,$(SERVICES)) ## Build a container image for every service
+
+.PHONY: image-%
+image-%: ## Build one service image, e.g. make image-api
+	docker build --build-arg SERVICE=$* -t $(IMAGE_REGISTRY)/$*:$(IMAGE_TAG) .
+
+.PHONY: kind-up
+kind-up: ## Create the local kind cluster
+	kind create cluster --name $(KIND_CLUSTER) --config deploy/kind/kind-config.yaml
+
+.PHONY: kind-down
+kind-down: ## Delete the local kind cluster
+	kind delete cluster --name $(KIND_CLUSTER)
+
+.PHONY: kind-load
+kind-load: images ## Build images and side-load them into kind (no registry)
+	@for s in $(SERVICES); do \
+		echo "load $(IMAGE_REGISTRY)/$$s:$(IMAGE_TAG)"; \
+		kind load docker-image $(IMAGE_REGISTRY)/$$s:$(IMAGE_TAG) --name $(KIND_CLUSTER); \
+	done
+
+.PHONY: deploy
+deploy: ## Install/upgrade the Helm release on the current kube context
+	helm upgrade --install $(HELM_RELEASE) $(CHART) \
+		--namespace $(HELM_NAMESPACE) --create-namespace \
+		--values $(CHART)/values-kind.yaml \
+		--wait --timeout 5m
+
+.PHONY: undeploy
+undeploy: ## Uninstall the Helm release
+	helm uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+.PHONY: helm-lint
+helm-lint: ## Lint and render the chart
+	helm lint $(CHART)
+	helm template $(HELM_RELEASE) $(CHART) --values $(CHART)/values-kind.yaml >/dev/null
+
+.PHONY: k8s-status
+k8s-status: ## Show pods in the release namespace
+	kubectl get pods,svc -n $(HELM_NAMESPACE)
 
 .PHONY: clean
 clean: ## Remove build artifacts

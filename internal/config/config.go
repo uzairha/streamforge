@@ -26,6 +26,25 @@ type Config struct {
 	TopicAggregates string
 	ConsumerGroup   string
 
+	// Producer and consumer tuning. These were hardcoded through M1-M5;
+	// M6 exposes them because throughput tuning is exactly the exercise of
+	// trading latency for batch efficiency, and that trade cannot be measured
+	// without being able to vary it.
+	//
+	// ProducerLinger is the headline knob: how long the client waits to
+	// accumulate records before sending. Zero sends immediately (lowest
+	// latency, smallest batches, most requests); a few milliseconds costs
+	// that much added latency but can multiply throughput.
+	ProducerLinger      time.Duration
+	ProducerMaxBatch    int32  // bytes per partition batch
+	ProducerCompression string // none | gzip | snappy | lz4 | zstd
+
+	// FetchMaxBytes caps one fetch response. Larger fetches mean fewer round
+	// trips but a bigger stall if the consumer is slow to process them.
+	FetchMaxBytes int32
+	FetchMaxWait  time.Duration
+	FetchMinBytes int32
+
 	// Event source (ingester)
 	Source          string // "synthetic" | "ethereum"
 	SyntheticRate   float64
@@ -108,6 +127,25 @@ func Load(service string) (Config, error) {
 	if c.EthFetchBodies, err = envBool("ETH_FETCH_BODIES", true); err != nil {
 		return Config{}, err
 	}
+	// Defaults preserve the M1-M5 behaviour exactly, so enabling these knobs
+	// changes nothing until someone deliberately turns one.
+	if c.ProducerLinger, err = envDuration("PRODUCER_LINGER", 5*time.Millisecond); err != nil {
+		return Config{}, err
+	}
+	if c.ProducerMaxBatch, err = envInt32("PRODUCER_MAX_BATCH_BYTES", 1_000_012); err != nil {
+		return Config{}, err
+	}
+	c.ProducerCompression = env("PRODUCER_COMPRESSION", "none")
+	if c.FetchMaxBytes, err = envInt32("FETCH_MAX_BYTES", 52_428_800); err != nil {
+		return Config{}, err
+	}
+	if c.FetchMaxWait, err = envDuration("FETCH_MAX_WAIT", 5*time.Second); err != nil {
+		return Config{}, err
+	}
+	if c.FetchMinBytes, err = envInt32("FETCH_MIN_BYTES", 1); err != nil {
+		return Config{}, err
+	}
+
 	if c.EthDedupWindow, err = envInt("ETH_DEDUP_WINDOW", 8192); err != nil {
 		return Config{}, err
 	}
@@ -139,6 +177,29 @@ func (c Config) validate() error {
 	}
 	if c.TraceSampleRatio < 0 || c.TraceSampleRatio > 1 {
 		return fmt.Errorf("TRACE_SAMPLE_RATIO must be between 0 and 1, got %v", c.TraceSampleRatio)
+	}
+	// Linger may legitimately be zero — that is the "send immediately" setting
+	// and the low-latency end of the trade this knob exists to explore.
+	if c.ProducerLinger < 0 {
+		return fmt.Errorf("PRODUCER_LINGER must be >= 0, got %v", c.ProducerLinger)
+	}
+	if c.ProducerMaxBatch <= 0 {
+		return fmt.Errorf("PRODUCER_MAX_BATCH_BYTES must be > 0, got %d", c.ProducerMaxBatch)
+	}
+	switch c.ProducerCompression {
+	case "none", "gzip", "snappy", "lz4", "zstd":
+	default:
+		return fmt.Errorf(
+			"PRODUCER_COMPRESSION must be none|gzip|snappy|lz4|zstd, got %q", c.ProducerCompression)
+	}
+	if c.FetchMaxBytes <= 0 {
+		return fmt.Errorf("FETCH_MAX_BYTES must be > 0, got %d", c.FetchMaxBytes)
+	}
+	if c.FetchMinBytes <= 0 {
+		return fmt.Errorf("FETCH_MIN_BYTES must be > 0, got %d", c.FetchMinBytes)
+	}
+	if c.FetchMaxWait <= 0 {
+		return fmt.Errorf("FETCH_MAX_WAIT must be > 0, got %v", c.FetchMaxWait)
 	}
 	if c.Source == "ethereum" {
 		if !strings.HasPrefix(c.EthWSURL, "ws://") && !strings.HasPrefix(c.EthWSURL, "wss://") {
@@ -224,4 +285,16 @@ func envDuration(key string, def time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return d, nil
+}
+
+func envInt32(key string, def int32) (int32, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	return int32(n), nil
 }

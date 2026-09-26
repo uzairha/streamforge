@@ -152,3 +152,51 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+func TestTuningDefaultsPreserveM5Behaviour(t *testing.T) {
+	t.Setenv("SOURCE", "synthetic")
+
+	cfg, err := Load("test")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// These were the hardcoded values through M1-M5. Changing a default here
+	// silently changes the throughput of every existing deployment.
+	if cfg.ProducerLinger != 5*time.Millisecond {
+		t.Errorf("ProducerLinger = %v, want 5ms", cfg.ProducerLinger)
+	}
+	if cfg.ProducerCompression != "none" {
+		t.Errorf("ProducerCompression = %q, want none", cfg.ProducerCompression)
+	}
+}
+
+// Zero linger is the low-latency end of the trade this knob exists for, and
+// M6 measured a 6.8x normalizer gain from it — it must not be rejected as
+// "unset".
+func TestZeroLingerIsValid(t *testing.T) {
+	t.Setenv("PRODUCER_LINGER", "0s")
+
+	cfg, err := Load("test")
+	if err != nil {
+		t.Fatalf("Load with zero linger: %v", err)
+	}
+	if cfg.ProducerLinger != 0 {
+		t.Errorf("ProducerLinger = %v, want 0", cfg.ProducerLinger)
+	}
+}
+
+func TestRejectsUnknownCompressionCodec(t *testing.T) {
+	t.Setenv("PRODUCER_COMPRESSION", "brotli")
+
+	if _, err := Load("test"); err == nil {
+		t.Fatal("expected an error for an unsupported codec")
+	}
+}
+
+func TestRejectsNonPositiveFetchBytes(t *testing.T) {
+	t.Setenv("FETCH_MAX_BYTES", "0")
+
+	if _, err := Load("test"); err == nil {
+		t.Fatal("expected an error for FETCH_MAX_BYTES=0")
+	}
+}

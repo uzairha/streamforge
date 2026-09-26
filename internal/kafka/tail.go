@@ -20,7 +20,7 @@ type TailConsumer struct {
 }
 
 // NewTailConsumer connects to brokers and seeks topic to its current end.
-func NewTailConsumer(brokers []string, topic string) (*TailConsumer, error) {
+func NewTailConsumer(brokers []string, topic string, tuning ...Tuning) (*TailConsumer, error) {
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("kafka: no brokers configured")
 	}
@@ -28,12 +28,14 @@ func NewTailConsumer(brokers []string, topic string) (*TailConsumer, error) {
 		return nil, fmt.Errorf("kafka: empty topic")
 	}
 
-	client, err := kgo.NewClient(
+	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.ConsumeTopics(topic),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtEnd()),
 		kgo.ClientID("streamforge-api-tail"),
-	)
+	}, resolveTuning(tuning).consumerOpts()...)
+
+	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new client: %w", err)
 	}

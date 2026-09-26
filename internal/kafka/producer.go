@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"sync/atomic"
-	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.opentelemetry.io/otel/attribute"
@@ -41,7 +40,7 @@ type Producer struct {
 }
 
 // NewProducer connects an idempotent, acks=all producer to brokers.
-func NewProducer(brokers []string, topic string, onResult OnResult) (*Producer, error) {
+func NewProducer(brokers []string, topic string, onResult OnResult, tuning ...Tuning) (*Producer, error) {
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("kafka: no brokers configured")
 	}
@@ -52,13 +51,14 @@ func NewProducer(brokers []string, topic string, onResult OnResult) (*Producer, 
 		onResult = func(string, error) {}
 	}
 
-	client, err := kgo.NewClient(
+	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.RequiredAcks(kgo.AllISRAcks()),
-		kgo.ProducerLinger(5*time.Millisecond),
 		kgo.AllowAutoTopicCreation(),
 		kgo.ClientID("streamforge-ingester"),
-	)
+	}, resolveTuning(tuning).producerOpts()...)
+
+	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new client: %w", err)
 	}

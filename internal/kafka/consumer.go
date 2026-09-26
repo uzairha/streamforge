@@ -41,7 +41,7 @@ type Consumer struct {
 
 // NewConsumer joins group on topic with cooperative-sticky rebalancing and
 // auto-commit disabled. Call Run to process records and commit offsets.
-func NewConsumer(brokers []string, topic, group string) (*Consumer, error) {
+func NewConsumer(brokers []string, topic, group string, tuning ...Tuning) (*Consumer, error) {
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("kafka: no brokers configured")
 	}
@@ -52,15 +52,17 @@ func NewConsumer(brokers []string, topic, group string) (*Consumer, error) {
 		return nil, fmt.Errorf("kafka: empty consumer group")
 	}
 
-	client, err := kgo.NewClient(
+	opts := append([]kgo.Opt{
 		kgo.SeedBrokers(brokers...),
 		kgo.ConsumeTopics(topic),
 		kgo.ConsumerGroup(group),
 		kgo.Balancers(kgo.CooperativeStickyBalancer()),
 		kgo.DisableAutoCommit(),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
-		kgo.ClientID("streamforge-"+group),
-	)
+		kgo.ClientID("streamforge-" + group),
+	}, resolveTuning(tuning).consumerOpts()...)
+
+	client, err := kgo.NewClient(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: new client: %w", err)
 	}

@@ -81,11 +81,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	tuning := kafka.Tuning{
+		ProducerLinger:      cfg.ProducerLinger,
+		ProducerMaxBatch:    cfg.ProducerMaxBatch,
+		ProducerCompression: cfg.ProducerCompression,
+		FetchMaxBytes:       cfg.FetchMaxBytes,
+		FetchMaxWait:        cfg.FetchMaxWait,
+		FetchMinBytes:       cfg.FetchMinBytes,
+	}
+	log.Info("kafka tuning", "settings", tuning.String())
+
 	producer, err := kafka.NewAggregateProducer(cfg.KafkaBrokers, cfg.TopicAggregates, func(topic string, perr error) {
 		if perr != nil {
 			metrics.ProduceErrors.WithLabelValues(topic).Inc()
 		}
-	})
+	}, tuning)
 	if err != nil {
 		log.Error("kafka producer", "err", err)
 		os.Exit(1)
@@ -100,7 +110,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	consumer, err := kafka.NewConsumer(cfg.KafkaBrokers, cfg.TopicNormalized, cfg.ConsumerGroup)
+	consumer, err := kafka.NewConsumer(cfg.KafkaBrokers, cfg.TopicNormalized, cfg.ConsumerGroup, tuning)
 	if err != nil {
 		log.Error("kafka consumer", "err", err)
 		os.Exit(1)

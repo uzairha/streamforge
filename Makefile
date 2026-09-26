@@ -3,6 +3,7 @@ GOBIN := $(shell go env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
 SERVICES := ingester normalizer aggregator api
+TOOLS    := lagprobe
 COMPOSE  := docker compose -f deploy/compose/docker-compose.yml
 COMPOSE_FULL := $(COMPOSE) -f deploy/compose/docker-compose.services.yml
 
@@ -36,7 +37,7 @@ proto: ## Lint protobuf and regenerate ./gen
 .PHONY: build
 build: ## Build every service binary into ./bin
 	@mkdir -p bin
-	@for s in $(SERVICES); do echo "build $$s"; go build -o bin/$$s ./cmd/$$s; done
+	@for s in $(SERVICES) $(TOOLS); do echo "build $$s"; go build -o bin/$$s ./cmd/$$s; done
 
 .PHONY: test
 test: ## Run all tests with the race detector (integration tests need Docker)
@@ -119,6 +120,18 @@ helm-lint: ## Lint and render the chart
 .PHONY: k8s-status
 k8s-status: ## Show pods in the release namespace
 	kubectl get pods,svc -n $(HELM_NAMESPACE)
+
+.PHONY: loadtest
+loadtest: ## Run the k6 API load test (needs the stack up)
+	k6 run loadtest/api.js
+
+.PHONY: lagprobe
+lagprobe: ## Sample consumer-group lag to CSV, e.g. make lagprobe LABEL=baseline
+	@mkdir -p loadtest/results
+	go run ./cmd/lagprobe \
+		--duration $(or $(DURATION),60s) \
+		--label $(or $(LABEL),run) \
+		--out loadtest/results/lag-$(or $(LABEL),run).csv
 
 .PHONY: clean
 clean: ## Remove build artifacts

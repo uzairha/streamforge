@@ -16,3 +16,6 @@ coverage.*
 
 # Local data volumes (if bind-mounted)
 /data/
+
+# Load test output — results are recorded in docs/PERFORMANCE.md, not committed
+loadtest/results/

@@ -7,14 +7,16 @@ REST/JSON gateway. The whole stack runs locally on Docker Compose and deploys to
 Kubernetes via a Helm chart, with Prometheus/Grafana metrics and OpenTelemetry
 tracing.
 
-> Status: **M5 — containers, Kubernetes and distributed tracing.** All four
+> Status: **M6 — load testing and tuning.** All four
 > services ship as distroless images and deploy to a local `kind` cluster with
 > one `helm install`, alongside single-replica Redpanda, TimescaleDB,
 > Prometheus, Grafana and Jaeger. Traces follow an event end to end — the trace
 > context rides in Kafka record headers, so one Jaeger trace spans ingester,
 > normalizer and aggregator across three processes and two topics. A provisioned
-> Grafana dashboard covers every pipeline stage. Load testing and lag tuning are
-> M6 (see [Roadmap](#roadmap)).
+> Grafana dashboard covers every pipeline stage. Measured throughput results
+> and the tuning that produced them are in
+> [docs/PERFORMANCE.md](docs/PERFORMANCE.md) — including a 6.8x normalizer
+> throughput gain from one producer setting.
 
 ## Architecture
 
@@ -163,6 +165,21 @@ than defaults:
 | aggregator | 1 | **Correctness constraint.** Window state is in-memory per process. A second replica would hold partial windows for its own partitions and both would upsert the same `(chain, metric, window_start, labels_key)` row — last writer wins, silently wrong aggregates. Safe scaling needs window keys aligned to partitions, but records are partitioned by sender address, not chain. |
 | api | 1+ | Stateless; the live tail is groupless, so each replica gets its own full copy of the stream. |
 
+## Performance
+
+`make loadtest` runs a k6 load test against the read path;
+`./loadtest/run-experiment.sh LABEL RATE LINGER COMPRESSION` runs one pipeline
+tuning experiment and records consumer-group lag.
+
+The headline finding: **producer linger costs the normalizer 6.8x throughput**,
+because that stage uses `ProduceSync` and therefore sends one record per batch,
+turning the linger wait into pure per-record latency. The same setting helps
+the ingester, which produces asynchronously and genuinely batches. Full numbers
+and reasoning in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+`cmd/lagprobe` samples real consumer-group lag (high watermark minus committed
+offset) rather than the rate-differential proxy the Grafana dashboard shows.
+
 ## Observability
 
 ### Dashboards
@@ -239,4 +256,4 @@ deploy/kind/        kind cluster config with host port mappings
 | **M3** | Normalizer + aggregator: consumer groups, tumbling windows, TimescaleDB, checkpointing |
 | **M4** | gRPC API (server-streaming) + grpc-gateway REST + demo dashboard + API-key auth |
 | **M5** | Dockerfiles, Helm chart, `kind` cluster, Grafana dashboards, OpenTelemetry + Jaeger |
-| M6 | k6 load test, tuning (partitions / batching / parallelism), end-to-end lag write-up |
+| **M6** | k6 load test, tuning (partitions / batching / parallelism), end-to-end lag write-up |

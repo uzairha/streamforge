@@ -174,8 +174,13 @@ tuning experiment and records consumer-group lag.
 The headline finding: **producer linger costs the normalizer 6.8x throughput**,
 because that stage uses `ProduceSync` and therefore sends one record per batch,
 turning the linger wait into pure per-record latency. The same setting helps
-the ingester, which produces asynchronously and genuinely batches. Full numbers
-and reasoning in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+the ingester, which produces asynchronously and genuinely batches. Linger is
+therefore resolved per stage: the ingester defaults to 5ms and the normalizer
+and aggregator to 0s, and any stage can be overridden with
+`<SERVICE>_PRODUCER_LINGER` (e.g. `NORMALIZER_PRODUCER_LINGER`). A global
+`PRODUCER_LINGER` still sets every stage at once, which is what the experiment
+script varies. Full numbers and reasoning in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 `cmd/lagprobe` samples real consumer-group lag (high watermark minus committed
 offset) rather than the rate-differential proxy the Grafana dashboard shows.

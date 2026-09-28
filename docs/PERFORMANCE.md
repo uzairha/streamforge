@@ -92,8 +92,10 @@ dead time.
 
 **One knob, opposite effects, depending on which produce mode a stage uses.**
 A single global `PRODUCER_LINGER` is therefore the wrong shape for this
-pipeline — the honest fix is per-stage configuration, which is noted as
-outstanding below.
+pipeline. Linger is now resolved per stage: the `ProduceSync` stages
+(normalizer, aggregator) default to 0s and the ingester keeps 5ms, with
+`<SERVICE>_PRODUCER_LINGER` overriding one stage and `PRODUCER_LINGER` still
+setting all of them for experiments.
 
 ## Result 3: compression made it worse
 
@@ -140,9 +142,6 @@ keep up on the same laptop. Another reason to read these as relative figures.
 
 ## What would come next
 
-- **Per-stage producer tuning.** The single global `PRODUCER_LINGER` is wrong
-  for a pipeline that mixes sync and async produce. Splitting it is the single
-  highest-value change suggested by these results.
 - **Batch the synchronous path.** The normalizer could produce a whole fetch's
   worth of records and commit once, rather than one round trip per record,
   keeping the same delivery guarantee at a fraction of the cost.

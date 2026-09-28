@@ -161,7 +161,9 @@ func TestTuningDefaultsPreserveM5Behaviour(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	// These were the hardcoded values through M1-M5. Changing a default here
-	// silently changes the throughput of every existing deployment.
+	// silently changes the throughput of every existing deployment. (Linger
+	// for the ProduceSync stages is the deliberate exception — see
+	// TestProducerLingerPerStage.)
 	if cfg.ProducerLinger != 5*time.Millisecond {
 		t.Errorf("ProducerLinger = %v, want 5ms", cfg.ProducerLinger)
 	}
@@ -182,6 +184,47 @@ func TestZeroLingerIsValid(t *testing.T) {
 	}
 	if cfg.ProducerLinger != 0 {
 		t.Errorf("ProducerLinger = %v, want 0", cfg.ProducerLinger)
+	}
+}
+
+func TestProducerLingerPerStage(t *testing.T) {
+	tests := []struct {
+		name    string
+		service string
+		env     map[string]string
+		want    time.Duration
+	}{
+		{"async stage keeps 5ms", "ingester", nil, 5 * time.Millisecond},
+		{"normalizer defaults to 0", "normalizer", nil, 0},
+		{"aggregator defaults to 0", "aggregator", nil, 0},
+		{"global overrides stage default", "normalizer",
+			map[string]string{"PRODUCER_LINGER": "5ms"}, 5 * time.Millisecond},
+		{"stage override beats global", "normalizer",
+			map[string]string{"PRODUCER_LINGER": "5ms", "NORMALIZER_PRODUCER_LINGER": "1ms"}, time.Millisecond},
+		{"stage override leaves other stages alone", "ingester",
+			map[string]string{"NORMALIZER_PRODUCER_LINGER": "1ms"}, 5 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := Load(tt.service)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.ProducerLinger != tt.want {
+				t.Errorf("ProducerLinger = %v, want %v", cfg.ProducerLinger, tt.want)
+			}
+		})
+	}
+}
+
+func TestRejectsNegativeStageLinger(t *testing.T) {
+	t.Setenv("AGGREGATOR_PRODUCER_LINGER", "-1ms")
+
+	if _, err := Load("aggregator"); err == nil {
+		t.Fatal("expected an error for a negative per-stage linger")
 	}
 }
 

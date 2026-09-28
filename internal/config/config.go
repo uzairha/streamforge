@@ -35,6 +35,9 @@ type Config struct {
 	// accumulate records before sending. Zero sends immediately (lowest
 	// latency, smallest batches, most requests); a few milliseconds costs
 	// that much added latency but can multiply throughput.
+	//
+	// It is resolved per stage, because the right value depends on the
+	// produce mode — see producerLinger.
 	ProducerLinger      time.Duration
 	ProducerMaxBatch    int32  // bytes per partition batch
 	ProducerCompression string // none | gzip | snappy | lz4 | zstd
@@ -127,11 +130,11 @@ func Load(service string) (Config, error) {
 	if c.EthFetchBodies, err = envBool("ETH_FETCH_BODIES", true); err != nil {
 		return Config{}, err
 	}
-	// Defaults preserve the M1-M5 behaviour exactly, so enabling these knobs
-	// changes nothing until someone deliberately turns one.
-	if c.ProducerLinger, err = envDuration("PRODUCER_LINGER", 5*time.Millisecond); err != nil {
+	if c.ProducerLinger, err = producerLinger(service); err != nil {
 		return Config{}, err
 	}
+	// The remaining defaults preserve the M1-M5 behaviour exactly, so these
+	// knobs change nothing until someone deliberately turns one.
 	if c.ProducerMaxBatch, err = envInt32("PRODUCER_MAX_BATCH_BYTES", 1_000_012); err != nil {
 		return Config{}, err
 	}
@@ -213,6 +216,33 @@ func (c Config) validate() error {
 		}
 	}
 	return nil
+}
+
+// syncProducers are the stages that use ProduceSync: they block on each
+// record's acknowledgement before committing its offset, so there is only
+// ever one record to batch and linger is pure added latency. M6 measured
+// 6.8x normalizer throughput between 5ms and 0s (docs/PERFORMANCE.md).
+var syncProducers = map[string]bool{"normalizer": true, "aggregator": true}
+
+// producerLinger resolves the linger for one stage. In order of precedence:
+//
+//   - <SERVICE>_PRODUCER_LINGER, e.g. NORMALIZER_PRODUCER_LINGER, so one
+//     deployment can tune each stage independently;
+//   - PRODUCER_LINGER, which applies to every stage — what the load-test
+//     experiments vary;
+//   - 0s for the ProduceSync stages, 5ms (the M1-M5 value) for the rest,
+//     where async Produce genuinely accumulates records and linger buys
+//     real batching.
+func producerLinger(service string) (time.Duration, error) {
+	def := 5 * time.Millisecond
+	if syncProducers[service] {
+		def = 0
+	}
+	global, err := envDuration("PRODUCER_LINGER", def)
+	if err != nil {
+		return 0, err
+	}
+	return envDuration(strings.ToUpper(service)+"_PRODUCER_LINGER", global)
 }
 
 func env(key, def string) string {

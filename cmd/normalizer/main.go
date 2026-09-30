@@ -1,8 +1,9 @@
 // Command normalizer consumes raw-events, validates and enriches each event,
 // and republishes it to normalized-events. Its consumer offset is committed
-// only once the enriched record has been durably produced, so a crash
-// between consuming and producing redelivers the record rather than losing
-// it. An invalid record is dropped (counted, not retried) since retrying
+// only once every enriched record from a fetch has been durably produced, so
+// a crash between consuming and producing redelivers the fetch rather than
+// losing it. A fetch's records are produced together and awaited once, not
+// one round trip at a time. An invalid record is dropped (counted, not retried) since retrying
 // can't fix a malformed one.
 package main
 
@@ -109,6 +110,8 @@ func main() {
 		}
 	}()
 
+	batch := producer.NewBatch()
+	var pending int64
 	runErr := consumer.Run(ctx, func(hctx context.Context, raw *streamforgev1.ChainEvent) error {
 		consumed++
 		metrics.EventsConsumed.WithLabelValues(cfg.TopicRaw).Inc()
@@ -121,12 +124,19 @@ func main() {
 		}
 
 		enriched := normalize.Enrich(raw)
-		if perr := producer.ProduceSync(hctx, enriched); perr != nil {
+		if perr := batch.Produce(hctx, enriched); perr != nil {
 			return fmt.Errorf("produce normalized event %s: %w", enriched.GetId(), perr)
 		}
-		produced++
+		pending++
 		return nil
-	})
+	}, kafka.WithBeforeCommit(func(wctx context.Context) error {
+		if werr := batch.Wait(wctx); werr != nil {
+			return fmt.Errorf("produce normalized batch: %w", werr)
+		}
+		produced += pending
+		pending = 0
+		return nil
+	}))
 	var commitErr *kafka.CommitError
 	if errors.As(runErr, &commitErr) {
 		metrics.CommitErrors.Inc()

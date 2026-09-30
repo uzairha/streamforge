@@ -6,6 +6,7 @@ package kafka
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -78,6 +79,12 @@ func (p *Producer) Ping(ctx context.Context) error {
 // ingester calls this with a background context (records must outlive the
 // shutdown signal), which makes this span the root of the pipeline's trace.
 func (p *Producer) Produce(ctx context.Context, ev *streamforgev1.ChainEvent) error {
+	return p.produce(ctx, ev, nil)
+}
+
+// produce is Produce with an optional extra callback, run after OnResult
+// with the same delivery outcome.
+func (p *Producer) produce(ctx context.Context, ev *streamforgev1.ChainEvent, then func(error)) error {
 	value, err := proto.Marshal(ev)
 	if err != nil {
 		return fmt.Errorf("kafka: marshal event %s: %w", ev.GetId(), err)
@@ -101,8 +108,74 @@ func (p *Producer) Produce(ctx context.Context, ev *streamforgev1.ChainEvent) er
 		}
 		span.End()
 		p.onResult(p.topic, err)
+		if then != nil {
+			then(err)
+		}
 	})
 	return nil
+}
+
+// Batch groups asynchronously produced records so the caller can wait for
+// all of them at once. It gives a whole consumer fetch the guarantee
+// ProduceSync gives one record — nothing is committed until every record is
+// durable — for the cost of a single wait instead of one round trip per
+// record. Records keep their per-key order: the producer is idempotent, so
+// retries never reorder a partition.
+type Batch struct {
+	p   *Producer
+	wg  sync.WaitGroup
+	mu  sync.Mutex
+	err error
+}
+
+// NewBatch returns an empty Batch that produces through p.
+func (p *Producer) NewBatch() *Batch {
+	return &Batch{p: p}
+}
+
+// Produce enqueues ev like Producer.Produce and adds it to the batch. It
+// returns an error only for local failures; delivery failures surface from
+// Wait.
+func (b *Batch) Produce(ctx context.Context, ev *streamforgev1.ChainEvent) error {
+	id := ev.GetId()
+	b.wg.Add(1)
+	err := b.p.produce(ctx, ev, func(err error) {
+		if err != nil {
+			b.mu.Lock()
+			if b.err == nil {
+				b.err = fmt.Errorf("kafka: produce event %s: %w", id, err)
+			}
+			b.mu.Unlock()
+		}
+		b.wg.Done()
+	})
+	if err != nil {
+		b.wg.Done()
+	}
+	return err
+}
+
+// Wait blocks until Kafka has acknowledged or rejected every record produced
+// since the last Wait, then returns the first delivery failure (nil if all
+// succeeded) and resets the batch for reuse. If ctx ends first, Wait returns
+// ctx.Err() with records possibly still outstanding; the Batch must not be
+// reused after that.
+func (b *Batch) Wait(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	b.mu.Lock()
+	err := b.err
+	b.err = nil
+	b.mu.Unlock()
+	return err
 }
 
 // ProduceSync enqueues ev like Produce, but blocks until Kafka acknowledges

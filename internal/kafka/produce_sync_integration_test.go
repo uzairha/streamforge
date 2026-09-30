@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -90,5 +91,68 @@ func assertOneRecordReadable(ctx context.Context, t *testing.T, broker, topic st
 	})
 	if n == 0 {
 		t.Fatal("no records readable after ProduceSync returned")
+	}
+}
+
+// TestBatch_Integration_RecordsAreDurableOnWait is the batch counterpart of
+// ProduceSyncIsDurableOnReturn: once Wait returns nil, every record in the
+// batch is readable.
+func TestBatch_Integration_RecordsAreDurableOnWait(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker; skipped in -short mode")
+	}
+	ctx := context.Background()
+	broker := startRedpanda(ctx, t)
+
+	const (
+		topic = "batch-durable-test"
+		want  = 50
+	)
+	p, err := NewProducer([]string{broker}, topic, nil)
+	if err != nil {
+		t.Fatalf("NewProducer: %v", err)
+	}
+	defer p.Close()
+
+	b := p.NewBatch()
+	for i := range want {
+		ev := &streamforgev1.ChainEvent{Id: fmt.Sprintf("evt:batch:%d", i), Chain: "test"}
+		if err := b.Produce(ctx, ev); err != nil {
+			t.Fatalf("Produce %d: %v", i, err)
+		}
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if err := b.Wait(waitCtx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if n := p.InFlight(); n != 0 {
+		t.Fatalf("InFlight after Wait = %d, want 0", n)
+	}
+
+	consumer, err := kgo.NewClient(
+		kgo.SeedBrokers(broker),
+		kgo.ConsumeTopics(topic),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	if err != nil {
+		t.Fatalf("consumer: %v", err)
+	}
+	defer consumer.Close()
+
+	readCtx, cancelRead := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelRead()
+	var n int
+	for n < want && readCtx.Err() == nil {
+		fetches := consumer.PollFetches(readCtx)
+		if readCtx.Err() == nil {
+			if err := fetches.Err(); err != nil {
+				t.Fatalf("poll: %v", err)
+			}
+		}
+		n += fetches.NumRecords()
+	}
+	if n != want {
+		t.Fatalf("read %d records after Wait returned, want %d", n, want)
 	}
 }

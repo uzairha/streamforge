@@ -138,6 +138,65 @@ func TestConsumer_Integration_CommitAdvancesPastHandledRecords(t *testing.T) {
 	}
 }
 
+// TestConsumer_Integration_BeforeCommitFailureSkipsCommit asserts a failing
+// WithBeforeCommit hook is treated like a handler failure: the fetch's
+// records were all handled, but none are committed, so they are redelivered.
+func TestConsumer_Integration_BeforeCommitFailureSkipsCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker; skipped in -short mode")
+	}
+	ctx := context.Background()
+	broker := startRedpanda(ctx, t)
+
+	const (
+		topic = "consumer-before-commit-test"
+		group = "consumer-before-commit-test-group"
+		want  = 10
+	)
+	produceN(ctx, t, broker, topic, want)
+
+	c1, err := NewConsumer([]string{broker}, topic, group)
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	sentinel := errors.New("batch not durable")
+	var handled int
+	runErr := c1.Run(ctx, func(_ context.Context, _ *streamforgev1.ChainEvent) error {
+		handled++
+		return nil
+	}, WithBeforeCommit(func(context.Context) error { return sentinel }))
+	c1.Close()
+	if !errors.Is(runErr, sentinel) {
+		t.Fatalf("first Run error = %v, want sentinel", runErr)
+	}
+	if handled == 0 {
+		t.Fatal("handler never ran before the hook")
+	}
+
+	c2, err := NewConsumer([]string{broker}, topic, group)
+	if err != nil {
+		t.Fatalf("NewConsumer: %v", err)
+	}
+	defer c2.Close()
+
+	seen := make(map[string]bool)
+	runCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = c2.Run(runCtx, func(_ context.Context, ev *streamforgev1.ChainEvent) error {
+		seen[ev.GetId()] = true
+		if len(seen) == want {
+			cancel()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+	if len(seen) != want {
+		t.Fatalf("redelivered %d records, want %d (the failed hook should have blocked the commit)", len(seen), want)
+	}
+}
+
 func startRedpanda(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	container, err := tcredpanda.Run(ctx, "redpandadata/redpanda:v24.2.7",

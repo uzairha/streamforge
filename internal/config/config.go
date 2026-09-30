@@ -218,11 +218,14 @@ func (c Config) validate() error {
 	return nil
 }
 
-// syncProducers are the stages that use ProduceSync: they block on each
-// record's acknowledgement before committing its offset, so there is only
-// ever one record to batch and linger is pure added latency. M6 measured
-// 6.8x normalizer throughput between 5ms and 0s (docs/PERFORMANCE.md).
-var syncProducers = map[string]bool{"normalizer": true, "aggregator": true}
+// zeroLingerStages default to no linger. The aggregator uses ProduceSync: it
+// blocks on each record's acknowledgement before committing its offset, so
+// there is only ever one record to batch and linger is pure added latency.
+// M6 measured 6.8x normalizer throughput between 5ms and 0s when the
+// normalizer worked the same way (docs/PERFORMANCE.md). The normalizer now
+// produces a whole fetch and waits once, so linger is no longer dead time
+// there, but 0s and 5ms both kept up with 5,000 events/s — it stays at 0s.
+var zeroLingerStages = map[string]bool{"normalizer": true, "aggregator": true}
 
 // producerLinger resolves the linger for one stage. In order of precedence:
 //
@@ -230,12 +233,12 @@ var syncProducers = map[string]bool{"normalizer": true, "aggregator": true}
 //     deployment can tune each stage independently;
 //   - PRODUCER_LINGER, which applies to every stage — what the load-test
 //     experiments vary;
-//   - 0s for the ProduceSync stages, 5ms (the M1-M5 value) for the rest,
+//   - 0s for zeroLingerStages, 5ms (the M1-M5 value) for the rest,
 //     where async Produce genuinely accumulates records and linger buys
 //     real batching.
 func producerLinger(service string) (time.Duration, error) {
 	def := 5 * time.Millisecond
-	if syncProducers[service] {
+	if zeroLingerStages[service] {
 		def = 0
 	}
 	global, err := envDuration("PRODUCER_LINGER", def)

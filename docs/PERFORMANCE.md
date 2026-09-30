@@ -95,7 +95,8 @@ A single global `PRODUCER_LINGER` is therefore the wrong shape for this
 pipeline. Linger is now resolved per stage: the `ProduceSync` stages
 (normalizer, aggregator) default to 0s and the ingester keeps 5ms, with
 `<SERVICE>_PRODUCER_LINGER` overriding one stage and `PRODUCER_LINGER` still
-setting all of them for experiments.
+setting all of them for experiments. (Result 5 later removed the normalizer
+from the `ProduceSync` group; it keeps the 0s default.)
 
 ## Result 3: compression made it worse
 
@@ -140,11 +141,54 @@ metrics backend, not the database.
 33 iterations were dropped at peak, meaning the load generator itself could not
 keep up on the same laptop. Another reason to read these as relative figures.
 
+## Result 5: batching the synchronous path removes the bottleneck
+
+Results 1–3 all trace back to one round trip per record. The consumer already
+committed once per fetch; only the produce side was serial. The normalizer
+now produces every record in a fetch asynchronously, waits once for all the
+acknowledgements (`kafka.Batch`), and only then commits (`WithBeforeCommit`).
+
+The delivery guarantee is unchanged. A failure anywhere in a fetch still
+commits nothing and redelivers the whole fetch, exactly as a failure part way
+through a fetch did before. Per-key order holds because the producer is
+idempotent.
+
+Each run below used a freshly recreated broker with 6-partition topics, linger
+0s everywhere unless noted, 45 seconds. The old code was re-run the same day as
+a control: it produced 32,998 at 2,000/s where Result 2 recorded 48,851. Same
+code, same machine, a third lower — which is why the before/after comparison
+has to be run back to back rather than against old numbers.
+
+| Configuration | Offered | Ingester produced | Normalizer produced | Peak lag | Windows closed |
+|---|---|---|---|---|---|
+| per-record `ProduceSync` (control) | 2,000/s | 98,545 | 32,998 | 73,670 | 12 |
+| **batched** | 2,000/s | 100,784 | **100,810** | **691** | 35 |
+| batched, normalizer linger 5ms | 2,000/s | 103,477 | 103,519 | 95 | 36 |
+| per-record `ProduceSync` (control) | 5,000/s | 254,167 | 43,085 | 216,796 | 11 |
+| **batched** | 5,000/s | 232,900 | **233,029** | **856** | 36 |
+| batched, normalizer linger 5ms | 5,000/s | 260,394 | 260,393 | 192 | 30 |
+
+The normalizer went from moving a third of the offered load to **keeping up
+with all of it, at both rates**. Lag stays in the hundreds, not the
+hundreds of thousands. (The normalizer's count can slightly exceed the
+ingester's because the two are scraped a moment apart.)
+
+At 5,000/s the old code moved 43,085 records — about 960/s, its ceiling on this
+machine. The batched normalizer's ceiling was not reached; finding it would
+need a faster ingester or a second one.
+
+**Linger no longer matters for the normalizer at these rates.** With a whole
+fetch in flight, records do accumulate, so 5ms is no longer dead time — but
+both settings kept up, so the throughput difference cannot be measured here.
+Peak lag was lower with 5ms in both pairs, but on single runs with lag in the
+hundreds that is within noise. The default stays at 0s.
+
 ## What would come next
 
-- **Batch the synchronous path.** The normalizer could produce a whole fetch's
-  worth of records and commit once, rather than one round trip per record,
-  keeping the same delivery guarantee at a fraction of the cost.
+- **Clean shutdown mid-fetch.** A shutdown signal that lands while a fetch is
+  being produced makes the normalizer exit with `context canceled` as an error
+  rather than cleanly. Nothing is lost — the fetch is redelivered — but it
+  logs an error and exits non-zero on routine restarts. This predates batching.
 - **Scale the normalizer out.** It is a stateless consumer-group member and the
   topics now have 6 partitions, so replicas are the obvious lever. The
   aggregator is deliberately *not* scalable — see the README for why.

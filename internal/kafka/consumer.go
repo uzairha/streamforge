@@ -31,6 +31,22 @@ func (e *CommitError) Unwrap() error { return e.Err }
 // is redelivered after a restart instead of being silently skipped.
 type Handler func(ctx context.Context, ev *streamforgev1.ChainEvent) error
 
+// RunOption customises Run.
+type RunOption func(*runConfig)
+
+type runConfig struct {
+	beforeCommit func(ctx context.Context) error
+}
+
+// WithBeforeCommit makes Run call fn once every record in a fetch has been
+// handled, just before committing that fetch's offsets. An error from fn
+// stops Run without committing, exactly like a handler error, so the whole
+// fetch is redelivered. Use it to wait for work the handler started but
+// didn't finish, such as a Batch of produced records.
+func WithBeforeCommit(fn func(ctx context.Context) error) RunOption {
+	return func(rc *runConfig) { rc.beforeCommit = fn }
+}
+
 // Consumer reads ChainEvents from a topic as part of a consumer group and
 // commits offsets manually, only once every record in a fetch has been
 // handled successfully.
@@ -88,13 +104,20 @@ func (c *Consumer) Close() {
 // commits nothing for the in-flight fetch, so the failing record (and any
 // after it in the same fetch) is redelivered on the next run.
 //
+// With WithBeforeCommit, the hook runs between the last handle call and the
+// commit, and a hook failure is treated like a handler failure.
+//
 // Run returns nil when ctx is cancelled during a clean poll. A fetch that
 // was already fully handled is still committed even if ctx is cancelled in
 // that instant (e.g. by a shutdown signal arriving right after the last
 // handle call) — the commit itself runs on a short-lived detached context,
 // not ctx, so already-earned work is never lost to the same cancellation
 // that's telling Run to stop.
-func (c *Consumer) Run(ctx context.Context, handle Handler) error {
+func (c *Consumer) Run(ctx context.Context, handle Handler, opts ...RunOption) error {
+	var rc runConfig
+	for _, opt := range opts {
+		opt(&rc)
+	}
 	for {
 		fetches := c.client.PollFetches(ctx)
 		if ctx.Err() != nil {
@@ -134,6 +157,11 @@ func (c *Consumer) Run(ctx context.Context, handle Handler) error {
 		})
 		if handleErr != nil {
 			return handleErr
+		}
+		if rc.beforeCommit != nil {
+			if err := rc.beforeCommit(ctx); err != nil {
+				return err
+			}
 		}
 
 		commitCtx, cancel := context.WithTimeout(context.Background(), commitTimeout)

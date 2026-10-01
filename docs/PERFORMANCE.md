@@ -185,10 +185,10 @@ hundreds that is within noise. The default stays at 0s.
 
 ## What would come next
 
-- **Clean shutdown mid-fetch.** A shutdown signal that lands while a fetch is
-  being produced makes the normalizer exit with `context canceled` as an error
-  rather than cleanly. Nothing is lost — the fetch is redelivered — but it
-  logs an error and exits non-zero on routine restarts. This predates batching.
+- ~~**Clean shutdown mid-fetch.**~~ Done: `Consumer.Run` now treats an error
+  caused by its own context's cancellation as a shutdown and returns nil, so
+  the normalizer and aggregator exit 0 on a routine restart. The interrupted
+  fetch is still left uncommitted and redelivered.
 - **Scale the normalizer out.** It is a stateless consumer-group member and the
   topics now have 6 partitions, so replicas are the obvious lever. The
   aggregator is deliberately *not* scalable — see the README for why.

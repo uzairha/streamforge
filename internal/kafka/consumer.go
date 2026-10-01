@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,7 +108,10 @@ func (c *Consumer) Close() {
 // With WithBeforeCommit, the hook runs between the last handle call and the
 // commit, and a hook failure is treated like a handler failure.
 //
-// Run returns nil when ctx is cancelled during a clean poll. A fetch that
+// Run returns nil when ctx is cancelled, including mid-fetch: a handler or
+// hook error caused by that cancellation (one matching ctx.Err()) is a
+// shutdown, not a failure. The interrupted fetch is left uncommitted and is
+// redelivered on the next run, exactly as with any other error. A fetch that
 // was already fully handled is still committed even if ctx is cancelled in
 // that instant (e.g. by a shutdown signal arriving right after the last
 // handle call) — the commit itself runs on a short-lived detached context,
@@ -156,11 +160,11 @@ func (c *Consumer) Run(ctx context.Context, handle Handler, opts ...RunOption) e
 			span.End()
 		})
 		if handleErr != nil {
-			return handleErr
+			return shutdownOr(ctx, handleErr)
 		}
 		if rc.beforeCommit != nil {
 			if err := rc.beforeCommit(ctx); err != nil {
-				return err
+				return shutdownOr(ctx, err)
 			}
 		}
 
@@ -171,4 +175,12 @@ func (c *Consumer) Run(ctx context.Context, handle Handler, opts ...RunOption) e
 			return &CommitError{Err: err}
 		}
 	}
+}
+
+// shutdownOr returns nil if err is ctx's own cancellation, and err otherwise.
+func shutdownOr(ctx context.Context, err error) error {
+	if cerr := ctx.Err(); cerr != nil && errors.Is(err, cerr) {
+		return nil
+	}
+	return err
 }

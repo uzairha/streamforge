@@ -197,6 +197,81 @@ func TestConsumer_Integration_BeforeCommitFailureSkipsCommit(t *testing.T) {
 	}
 }
 
+// TestConsumer_Integration_ShutdownMidFetchIsClean asserts that a shutdown
+// landing while a fetch is being handled stops Run with nil rather than the
+// cancellation error, and still leaves that fetch uncommitted for the next
+// run. It covers cancellation surfacing from the handler (the aggregator's
+// ProduceSync) and from the before-commit hook (the normalizer's Batch.Wait).
+func TestConsumer_Integration_ShutdownMidFetchIsClean(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker; skipped in -short mode")
+	}
+	ctx := context.Background()
+	broker := startRedpanda(ctx, t)
+
+	const want = 10
+	cases := []struct {
+		name string
+		run  func(c *Consumer, runCtx context.Context, cancel context.CancelFunc) error
+	}{
+		{"handler", func(c *Consumer, runCtx context.Context, cancel context.CancelFunc) error {
+			return c.Run(runCtx, func(hctx context.Context, _ *streamforgev1.ChainEvent) error {
+				cancel()
+				return fmt.Errorf("produce: %w", hctx.Err())
+			})
+		}},
+		{"before_commit", func(c *Consumer, runCtx context.Context, cancel context.CancelFunc) error {
+			return c.Run(runCtx, func(context.Context, *streamforgev1.ChainEvent) error {
+				return nil
+			}, WithBeforeCommit(func(wctx context.Context) error {
+				cancel()
+				return fmt.Errorf("produce batch: %w", wctx.Err())
+			}))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			topic := "consumer-shutdown-" + tc.name
+			group := topic + "-group"
+			produceN(ctx, t, broker, topic, want)
+
+			c1, err := NewConsumer([]string{broker}, topic, group)
+			if err != nil {
+				t.Fatalf("NewConsumer: %v", err)
+			}
+			runCtx, cancel := context.WithCancel(ctx)
+			runErr := tc.run(c1, runCtx, cancel)
+			cancel()
+			c1.Close()
+			if runErr != nil {
+				t.Fatalf("Run after mid-fetch shutdown = %v, want nil", runErr)
+			}
+
+			c2, err := NewConsumer([]string{broker}, topic, group)
+			if err != nil {
+				t.Fatalf("NewConsumer: %v", err)
+			}
+			defer c2.Close()
+			seen := make(map[string]bool)
+			readCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+			defer stop()
+			err = c2.Run(readCtx, func(_ context.Context, ev *streamforgev1.ChainEvent) error {
+				seen[ev.GetId()] = true
+				if len(seen) == want {
+					stop()
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("second Run: %v", err)
+			}
+			if len(seen) != want {
+				t.Fatalf("redelivered %d records, want %d (the interrupted fetch must not be committed)", len(seen), want)
+			}
+		})
+	}
+}
+
 func startRedpanda(ctx context.Context, t *testing.T) string {
 	t.Helper()
 	container, err := tcredpanda.Run(ctx, "redpandadata/redpanda:v24.2.7",
